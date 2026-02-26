@@ -1,0 +1,36 @@
+Here are the essential skills needed for a sports betting automated agent:
+
+Data & Analytics
+- Real-time odds scraping and aggregation across multiple bookmakers
+- Historical data mining and statistical modeling
+- Probability calculation and expected value (EV) identification
+- Line movement tracking and sharp money detection
+
+Technical Infrastructure
+- Low-latency API integrations with betting exchanges and sports data feeds
+- Automated bet placement with error handling and retry logic
+- Scalable architecture for handling high-frequency data streams
+- Secure credential management and fund handling protocols
+
+Risk Management
+- Bankroll management algorithms (Kelly criterion, unit sizing)
+- Diversification across sports, leagues, and bet types
+- Exposure monitoring and correlation risk assessment
+- Automated stop-losses and cool-down triggers
+
+Market Intelligence
+- Arbitrage and positive EV opportunity detection
+- Steam chasing and reverse line movement analysis
+- Weather, injury, and lineup impact modeling
+- Closing line value (CLV) tracking for performance validation
+
+Compliance & Operations
+- Multi-jurisdiction regulatory awareness and geolocation handling
+- Account health monitoring (avoiding limits/bans)
+- Audit trails and reporting for tax/legal requirements
+- Fraud detection and anomalous pattern recognition
+
+Machine Learning (Optional but Advanced)
+- Predictive modeling for game outcomes and player props
+- Natural language processing for news/sentiment analysis
+- Reinforcement learning for dynamic stake optimization
