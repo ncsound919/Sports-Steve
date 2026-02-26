@@ -8,6 +8,7 @@ Implements skills from the Big skills document:
   - Audit trails and reporting for tax/legal requirements
 """
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -62,6 +63,9 @@ class RiskManager:
         self._bets: dict[str, Bet] = {}          # id -> Bet
         self._daily_pnl: float = 0.0
         self._is_cooling_down: bool = False
+        # Asyncio lock guards state mutations when concurrent coroutines
+        # (e.g., BackgroundTasks + APScheduler jobs) run in the same event loop.
+        self._lock = asyncio.Lock()
 
         logger.info(
             "RiskManager initialized | bankroll=%.2f | "
@@ -70,6 +74,20 @@ class RiskManager:
             max_daily_loss_pct * 100,
             kelly_fraction,
         )
+
+    # ------------------------------------------------------------------
+    # Read-only properties for observability / testing
+    # ------------------------------------------------------------------
+
+    @property
+    def daily_pnl(self) -> float:
+        """Today's realised profit and loss (resets each trading day)."""
+        return self._daily_pnl
+
+    @property
+    def is_cooling_down(self) -> bool:
+        """True when the stop-loss has been triggered and no bets should be placed."""
+        return self._is_cooling_down
 
     # ------------------------------------------------------------------
     # Bankroll management — Kelly criterion
@@ -170,12 +188,15 @@ class RiskManager:
             by_broker[b.broker_name] = by_broker.get(b.broker_name, 0.0) + b.stake
             by_sport[b.sport] = by_sport.get(b.sport, 0.0) + b.stake
 
+        if self.bankroll <= 0:
+            logger.warning("Bankroll is non-positive (%.2f) — exposure percentage is unavailable.", self.bankroll)
+
         return {
             "total_open_stake": round(total_stake, 2),
             "open_bet_count": len(open_bets),
             "by_broker": by_broker,
             "by_sport": by_sport,
-            "exposure_pct": round(total_stake / self.bankroll * 100, 2) if self.bankroll else 0.0,
+            "exposure_pct": round(total_stake / self.bankroll * 100, 2) if self.bankroll > 0 else 0.0,
         }
 
     # ------------------------------------------------------------------
@@ -206,7 +227,8 @@ class RiskManager:
             odds=getattr(parlay, "odds", 0.0),
             expected_value=getattr(parlay, "expected_value", 0.0),
         )
-        self._bets[record_id] = bet
+        async with self._lock:
+            self._bets[record_id] = bet
         logger.info(
             "Bet recorded | id=%s bet_id=%s broker=%s sport=%s stake=%.2f",
             record_id,
@@ -232,27 +254,28 @@ class RiskManager:
         result:
             "won" or "lost" (or "void" for cancelled/push).
         """
-        bet = self._bets.get(bet_internal_id)
-        if bet is None:
-            logger.warning("settle_bet: unknown bet id %s", bet_internal_id)
-            return None
+        async with self._lock:
+            bet = self._bets.get(bet_internal_id)
+            if bet is None:
+                logger.warning("settle_bet: unknown bet id %s", bet_internal_id)
+                return None
 
-        bet.status = result
-        bet.result = result
-        bet.settled_at = datetime.now(timezone.utc)
+            bet.status = result
+            bet.result = result
+            bet.settled_at = datetime.now(timezone.utc)
 
-        if result == "won":
-            profit = bet.stake * (bet.odds - 1)
-            self.bankroll += profit
-            self._daily_pnl += profit
-            logger.info("Bet %s WON — profit=%.2f new_bankroll=%.2f", bet.bet_id, profit, self.bankroll)
-        elif result == "lost":
-            self.bankroll -= bet.stake
-            self._daily_pnl -= bet.stake
-            logger.info("Bet %s LOST — stake=%.2f new_bankroll=%.2f", bet.bet_id, bet.stake, self.bankroll)
-            # Re-evaluate stop-loss after a loss
-            self.check_stop_loss()
-        else:
-            logger.info("Bet %s result=%s — no P&L change.", bet.bet_id, result)
+            if result == "won":
+                profit = bet.stake * (bet.odds - 1)
+                self.bankroll += profit
+                self._daily_pnl += profit
+                logger.info("Bet %s WON — profit=%.2f new_bankroll=%.2f", bet.bet_id, profit, self.bankroll)
+            elif result == "lost":
+                self.bankroll -= bet.stake
+                self._daily_pnl -= bet.stake
+                logger.info("Bet %s LOST — stake=%.2f new_bankroll=%.2f", bet.bet_id, bet.stake, self.bankroll)
+                # Re-evaluate stop-loss after a loss
+                self.check_stop_loss()
+            else:
+                logger.info("Bet %s result=%s — no P&L change.", bet.bet_id, result)
 
         return bet

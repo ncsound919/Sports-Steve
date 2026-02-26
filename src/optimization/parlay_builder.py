@@ -28,6 +28,7 @@ class Parlay:
     odds: float = 0.0
     recommended_stake: float = 0.0
     expected_value: float = 0.0
+    win_probability: float = 0.0
 
 
 class ParlayOptimizer:

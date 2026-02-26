@@ -73,6 +73,12 @@ async def daily_bet_assessment(app) -> None:
     """
     logger.info("=== Daily bet assessment starting ===")
     brokers = _build_brokers()
+    risk_manager = app.state.risk_manager
+
+    # Enforce stop-loss / cool-down before doing any work
+    if risk_manager.check_stop_loss():
+        logger.warning("Daily assessment aborted — stop-loss/cool-down is active.")
+        return
 
     # -- Import here to avoid circular deps at module load time --
     from src.optimization.parlay_builder import ParlayOptimizer
@@ -95,6 +101,19 @@ async def daily_bet_assessment(app) -> None:
 
     placed = 0
     for parlay in parlays[:5]:           # cap at top 5 per day
+        # Re-check stop-loss and exposure before each bet
+        if risk_manager.check_stop_loss():
+            logger.warning("Stop-loss triggered mid-session — halting further placement.")
+            break
+
+        exposure = risk_manager.get_exposure()
+        if exposure["exposure_pct"] >= risk_manager.max_exposure_pct * 100:
+            logger.warning(
+                "Exposure limit reached (%.1f%%) — skipping remaining parlays.",
+                exposure["exposure_pct"],
+            )
+            break
+
         broker_name, broker = _select_broker(brokers, parlay.sport)
         try:
             event_ids = [leg.event_id for leg in parlay.legs]
@@ -104,12 +123,22 @@ async def daily_bet_assessment(app) -> None:
                 logger.info(f"Edge no longer valid for parlay {parlay.id}, skipping")
                 continue
 
+            # Use Kelly criterion for stake sizing when win probability is available.
+            # win_probability == 0.0 is the sentinel for "not provided by optimizer".
+            if parlay.win_probability > 0:
+                stake = risk_manager.kelly_stake(parlay.win_probability, parlay.odds)
+                if stake == 0.0:
+                    logger.info(f"Kelly stake is zero for parlay {parlay.id} — skipping")
+                    continue
+            else:
+                stake = parlay.recommended_stake
+
             bet_id = await broker.place_bet(
                 legs=[leg.__dict__ for leg in parlay.legs],
-                stake=parlay.recommended_stake,
+                stake=stake,
                 odds=parlay.odds,
             )
-            await app.state.risk_manager.record_bet(parlay, bet_id, broker_name)
+            await risk_manager.record_bet(parlay, bet_id, broker_name)
             logger.info(f"Placed bet {bet_id} via {broker_name} (parlay {parlay.id})")
             placed += 1
 
@@ -150,6 +179,12 @@ async def resolve_bets(app) -> None:
     logger.info(f"Bet resolution complete — {settled_count} settled out of {len(pending)} pending")
 
 
+async def reset_daily_limits(app) -> None:
+    """Reset stop-loss and daily P&L at the start of each trading day (00:00)."""
+    app.state.risk_manager.reset_daily_limits()
+    logger.info("Daily risk limits reset.")
+
+
 # ---------------------------------------------------------------------------
 # Scheduler factory
 # ---------------------------------------------------------------------------
@@ -161,10 +196,22 @@ def create_scheduler(app) -> AsyncIOScheduler:
     Call scheduler.start() in your app lifespan, scheduler.shutdown() on teardown.
 
     Jobs:
+        - reset_daily_limits    -> every day at 00:00
         - daily_bet_assessment  -> every day at 09:00
         - resolve_bets          -> every hour at :05 past the hour
     """
     scheduler = AsyncIOScheduler()
+
+    scheduler.add_job(
+        reset_daily_limits,
+        trigger="cron",
+        hour=0,
+        minute=0,
+        id="reset_daily_limits",
+        args=[app],
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
 
     scheduler.add_job(
         daily_bet_assessment,
@@ -187,5 +234,8 @@ def create_scheduler(app) -> AsyncIOScheduler:
         misfire_grace_time=120,
     )
 
-    logger.info("Scheduler configured: daily_bet_assessment @ 09:00, resolve_bets @ *:05")
+    logger.info(
+        "Scheduler configured: reset_daily_limits @ 00:00, "
+        "daily_bet_assessment @ 09:00, resolve_bets @ *:05"
+    )
     return scheduler
