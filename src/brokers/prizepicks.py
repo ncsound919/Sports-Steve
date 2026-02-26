@@ -104,7 +104,7 @@ class PrizePicksBroker(SportsbookBroker):
 
         try:
             data = await self._get_with_retry(f"{self.BASE_URL}/projections", params)
-        except Exception as e:
+        except Exception:
             logger.exception("PrizePicks odds fetch failed")
             return {}
 
