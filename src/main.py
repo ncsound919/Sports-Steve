@@ -7,6 +7,7 @@ import logging
 
 from fastapi import FastAPI, APIRouter, BackgroundTasks
 
+from src.risk_manager import RiskManager
 from src.scheduler import create_scheduler
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ---- startup ----
+    app.state.risk_manager = RiskManager()
     scheduler = create_scheduler(app)
     scheduler.start()
     logger.info("APScheduler started")
