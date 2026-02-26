@@ -38,7 +38,8 @@ class DraftKingsBroker(SportsbookBroker):
 
     def __init__(self):
         if not _DK_AVAILABLE:
-            raise ImportError("lukhed-sports is required: pip install lukhed-sports")
+            msg = "lukhed-sports is required: pip install lukhed-sports"
+            raise ImportError(msg)
         # DkSportsbook handles geo-location internally
         self.client = DkSportsbook()
 
@@ -59,7 +60,7 @@ class DraftKingsBroker(SportsbookBroker):
             # Return all if no filter
             return {game["event_id"]: game for game in lines}
         except Exception as e:
-            logger.exception(f"DraftKings odds fetch failed for {sport}: {e}")
+            logger.exception("DraftKings odds fetch failed for %s", sport)
             return {}
 
     async def place_bet(self, legs: list[dict], stake: float, odds: float) -> str:
@@ -79,6 +80,11 @@ class DraftKingsBroker(SportsbookBroker):
         SIMULATED — In production, poll DraftKings API or use webhook.
         """
         if bet_id.startswith("DK_MOCK_"):
-            return {"bet_id": bet_id, "status": "pending", "result": None, "source": "simulated"}
+            return {
+                "bet_id": bet_id,
+                "status": "pending",
+                "result": None,
+                "source": "simulated",
+            }
         # Real implementation would call an authenticated endpoint here
         return {"bet_id": bet_id, "status": "unknown", "result": None}

@@ -1,7 +1,7 @@
 import time
 import logging
 import asyncio
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 import httpx
 
@@ -39,7 +39,7 @@ class PrizePicksBroker(SportsbookBroker):
 
     def __init__(
         self,
-        auth_token: Optional[str] = None,
+        auth_token: str | None = None,
         max_retries: int = 3,
         retry_delay: float = 2.0,
     ):
@@ -75,13 +75,13 @@ class PrizePicksBroker(SportsbookBroker):
                     continue
                 resp.raise_for_status()
                 return resp.json()
-            except httpx.HTTPStatusError as e:
-                logger.error(f"PrizePicks HTTP error (attempt {attempt}): {e}")
+            except httpx.HTTPStatusError:
+                logger.exception("PrizePicks HTTP error (attempt %s)", attempt)
                 if attempt == self.max_retries:
                     raise
                 await asyncio.sleep(self.retry_delay)
-            except httpx.RequestError as e:
-                logger.error(f"PrizePicks request error (attempt {attempt}): {e}")
+            except httpx.RequestError:
+                logger.exception("PrizePicks request error (attempt %s)", attempt)
                 if attempt == self.max_retries:
                     raise
                 await asyncio.sleep(self.retry_delay)
@@ -105,7 +105,7 @@ class PrizePicksBroker(SportsbookBroker):
         try:
             data = await self._get_with_retry(f"{self.BASE_URL}/projections", params)
         except Exception as e:
-            logger.exception(f"PrizePicks odds fetch failed: {e}")
+            logger.exception("PrizePicks odds fetch failed")
             return {}
 
         # Build player lookup from 'included'

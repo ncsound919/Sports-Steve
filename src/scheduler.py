@@ -75,8 +75,8 @@ async def daily_bet_assessment(app) -> None:
     brokers = _build_brokers()
 
     # -- Import here to avoid circular deps at module load time --
-    from src.optimization.parlay_builder import ParlayOptimizer  # noqa: F401
-    from src.config import settings                               # noqa: F401
+    from src.optimization.parlay_builder import ParlayOptimizer
+    from src.config import settings
 
     try:
         optimizer = ParlayOptimizer(
@@ -90,7 +90,7 @@ async def daily_bet_assessment(app) -> None:
         )
         logger.info(f"Optimizer returned {len(parlays)} parlay candidates")
     except Exception as e:
-        logger.exception(f"Parlay optimiser failed: {e}")
+        logger.exception("Parlay optimiser failed")
         return
 
     placed = 0
@@ -114,7 +114,7 @@ async def daily_bet_assessment(app) -> None:
             placed += 1
 
         except Exception as e:
-            logger.exception(f"Failed to place parlay {getattr(parlay, 'id', '?')}: {e}")
+            logger.exception("Failed to place parlay %s", getattr(parlay, 'id', '?'))
 
     logger.info(f"=== Daily assessment complete — {placed} bet(s) placed ===")
 
@@ -129,7 +129,7 @@ async def resolve_bets(app) -> None:
     try:
         pending = await app.state.risk_manager.get_pending_bets()
     except Exception as e:
-        logger.exception(f"Could not fetch pending bets: {e}")
+        logger.exception("Could not fetch pending bets")
         return
 
     settled_count = 0
@@ -145,7 +145,7 @@ async def resolve_bets(app) -> None:
                 logger.info(f"Settled bet {bet.bet_id}: result={status['result']}")
                 settled_count += 1
         except Exception as e:
-            logger.exception(f"Error resolving bet {bet.bet_id}: {e}")
+            logger.exception("Error resolving bet %s", bet.bet_id)
 
     logger.info(f"Bet resolution complete — {settled_count} settled out of {len(pending)} pending")
 
