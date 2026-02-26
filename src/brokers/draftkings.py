@@ -59,7 +59,7 @@ class DraftKingsBroker(SportsbookBroker):
                 }
             # Return all if no filter
             return {game["event_id"]: game for game in lines}
-        except Exception as e:
+        except Exception:
             logger.exception("DraftKings odds fetch failed for %s", sport)
             return {}
 
