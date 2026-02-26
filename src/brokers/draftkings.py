@@ -1,6 +1,6 @@
 import time
 import logging
-from typing import List, Dict, Any
+from typing import Any, ClassVar
 
 from .base import SportsbookBroker
 
@@ -24,7 +24,7 @@ class DraftKingsBroker(SportsbookBroker):
     authenticated session (Selenium / manual cookie injection).
     """
 
-    LEAGUE_MAP = {
+    LEAGUE_MAP: ClassVar[dict[str, str]] = {
         "NFL": "nfl",
         "NBA": "nba",
         "NHL": "nhl",
@@ -42,7 +42,7 @@ class DraftKingsBroker(SportsbookBroker):
         # DkSportsbook handles geo-location internally
         self.client = DkSportsbook()
 
-    async def get_odds(self, sport: str, event_ids: List[str]) -> Dict[str, Any]:
+    async def get_odds(self, sport: str, event_ids: list[str]) -> dict[str, Any]:
         """
         Fetch game lines for a league and filter by event_ids.
         Returns: { event_id: game_data_dict }
@@ -59,10 +59,10 @@ class DraftKingsBroker(SportsbookBroker):
             # Return all if no filter
             return {game["event_id"]: game for game in lines}
         except Exception as e:
-            logger.error(f"DraftKings odds fetch failed for {sport}: {e}")
+            logger.exception(f"DraftKings odds fetch failed for {sport}: {e}")
             return {}
 
-    async def place_bet(self, legs: List[Dict], stake: float, odds: float) -> str:
+    async def place_bet(self, legs: list[dict], stake: float, odds: float) -> str:
         """
         SIMULATED — DraftKings has no public bet-placement API.
         Replace with authenticated session logic for production.
@@ -74,7 +74,7 @@ class DraftKingsBroker(SportsbookBroker):
         )
         return mock_id
 
-    async def check_bet_status(self, bet_id: str) -> Dict[str, Any]:
+    async def check_bet_status(self, bet_id: str) -> dict[str, Any]:
         """
         SIMULATED — In production, poll DraftKings API or use webhook.
         """
