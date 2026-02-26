@@ -6,7 +6,6 @@ Override via environment variables or a .env file.
 
 import os
 from dataclasses import dataclass, field
-from typing import List
 
 
 @dataclass
@@ -14,7 +13,7 @@ class Settings:
     """Central configuration for Sports-Steve."""
 
     # Sports to monitor for daily bet assessment
-    ACTIVE_SPORTS: List[str] = field(
+    ACTIVE_SPORTS: list[str] = field(
         default_factory=lambda: os.getenv(
             "ACTIVE_SPORTS", "NFL,NBA,NHL,MLB"
         ).split(",")

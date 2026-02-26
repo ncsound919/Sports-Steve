@@ -16,7 +16,6 @@ Usage (FastAPI lifespan):
 """
 
 import logging
-from typing import Dict, Tuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -31,14 +30,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _build_brokers() -> Dict[str, SportsbookBroker]:
+def _build_brokers() -> dict[str, SportsbookBroker]:
     return {
         "draftkings": DraftKingsBroker(),
         "prizepicks": PrizePicksBroker(),
     }
 
 
-def _select_broker(brokers: Dict[str, SportsbookBroker], sport: str) -> Tuple[str, SportsbookBroker]:
+def _select_broker(brokers: dict[str, SportsbookBroker], sport: str) -> tuple[str, SportsbookBroker]:
     """
     Route a sport to the preferred broker.
     - Game lines (spreads/totals/ML) -> DraftKings
@@ -76,8 +75,8 @@ async def daily_bet_assessment(app) -> None:
     brokers = _build_brokers()
 
     # -- Import here to avoid circular deps at module load time --
-    from src.optimization.parlay_builder import ParlayOptimizer  # noqa: F401
-    from src.config import settings                               # noqa: F401
+    from src.optimization.parlay_builder import ParlayOptimizer
+    from src.config import settings
 
     try:
         optimizer = ParlayOptimizer(
@@ -90,8 +89,8 @@ async def daily_bet_assessment(app) -> None:
             max_legs=3,
         )
         logger.info(f"Optimizer returned {len(parlays)} parlay candidates")
-    except Exception as e:
-        logger.error(f"Parlay optimiser failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Parlay optimiser failed")
         return
 
     placed = 0
@@ -114,8 +113,8 @@ async def daily_bet_assessment(app) -> None:
             logger.info(f"Placed bet {bet_id} via {broker_name} (parlay {parlay.id})")
             placed += 1
 
-        except Exception as e:
-            logger.error(f"Failed to place parlay {getattr(parlay, 'id', '?')}: {e}", exc_info=True)
+        except Exception:
+            logger.exception("Failed to place parlay %s", getattr(parlay, 'id', '?'))
 
     logger.info(f"=== Daily assessment complete — {placed} bet(s) placed ===")
 
@@ -129,8 +128,8 @@ async def resolve_bets(app) -> None:
 
     try:
         pending = await app.state.risk_manager.get_pending_bets()
-    except Exception as e:
-        logger.error(f"Could not fetch pending bets: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Could not fetch pending bets")
         return
 
     settled_count = 0
@@ -145,8 +144,8 @@ async def resolve_bets(app) -> None:
                 await app.state.risk_manager.settle_bet(bet.id, status["result"])
                 logger.info(f"Settled bet {bet.bet_id}: result={status['result']}")
                 settled_count += 1
-        except Exception as e:
-            logger.error(f"Error resolving bet {bet.bet_id}: {e}", exc_info=True)
+        except Exception:
+            logger.exception("Error resolving bet %s", bet.bet_id)
 
     logger.info(f"Bet resolution complete — {settled_count} settled out of {len(pending)} pending")
 

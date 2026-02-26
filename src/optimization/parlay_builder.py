@@ -6,7 +6,6 @@ Replace the stub implementation with your real optimization logic.
 """
 
 import logging
-from typing import List
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -25,7 +24,7 @@ class Parlay:
     """A candidate parlay to be placed."""
     id: str
     sport: str
-    legs: List[Leg] = field(default_factory=list)
+    legs: list[Leg] = field(default_factory=list)
     odds: float = 0.0
     recommended_stake: float = 0.0
     expected_value: float = 0.0
@@ -42,10 +41,10 @@ class ParlayOptimizer:
 
     async def generate_optimized_parlays(
         self,
-        sports: List[str],
+        sports: list[str],
         min_edge: float = 0.05,
         max_legs: int = 3,
-    ) -> List[Parlay]:
+    ) -> list[Parlay]:
         """
         Generate optimized parlay candidates.
 

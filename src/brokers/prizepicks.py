@@ -1,13 +1,15 @@
 import time
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import Any, ClassVar
 
 import httpx
 
 from .base import SportsbookBroker
 
 logger = logging.getLogger(__name__)
+
+_HTTP_TOO_MANY_REQUESTS = 429
 
 
 class PrizePicksBroker(SportsbookBroker):
@@ -21,7 +23,7 @@ class PrizePicksBroker(SportsbookBroker):
     BASE_URL = "https://api.prizepicks.com"
 
     # PrizePicks league IDs (verify periodically — these can change)
-    LEAGUE_MAP: Dict[str, int] = {
+    LEAGUE_MAP: ClassVar[dict[str, int]] = {
         "NBA": 7,
         "NFL": 5,
         "NHL": 9,
@@ -37,7 +39,7 @@ class PrizePicksBroker(SportsbookBroker):
 
     def __init__(
         self,
-        auth_token: Optional[str] = None,
+        auth_token: str | None = None,
         max_retries: int = 3,
         retry_delay: float = 2.0,
     ):
@@ -55,36 +57,42 @@ class PrizePicksBroker(SportsbookBroker):
 
         self.client = httpx.AsyncClient(headers=headers, timeout=15.0)
 
-    async def _get_with_retry(self, url: str, params: Dict) -> Dict:
+    async def __aenter__(self) -> "PrizePicksBroker":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.aclose()
+
+    async def _get_with_retry(self, url: str, params: dict) -> dict:
         """GET with exponential-backoff retry on rate-limit (429) or server errors."""
         for attempt in range(1, self.max_retries + 1):
             try:
                 resp = await self.client.get(url, params=params)
-                if resp.status_code == 429:
+                if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
                     wait = self.retry_delay * attempt
                     logger.warning(f"PrizePicks rate-limited. Retrying in {wait}s...")
                     await asyncio.sleep(wait)
                     continue
                 resp.raise_for_status()
                 return resp.json()
-            except httpx.HTTPStatusError as e:
-                logger.error(f"PrizePicks HTTP error (attempt {attempt}): {e}")
+            except httpx.HTTPStatusError:
+                logger.exception("PrizePicks HTTP error (attempt %s)", attempt)
                 if attempt == self.max_retries:
                     raise
                 await asyncio.sleep(self.retry_delay)
-            except httpx.RequestError as e:
-                logger.error(f"PrizePicks request error (attempt {attempt}): {e}")
+            except httpx.RequestError:
+                logger.exception("PrizePicks request error (attempt %s)", attempt)
                 if attempt == self.max_retries:
                     raise
                 await asyncio.sleep(self.retry_delay)
         return {}
 
-    async def get_odds(self, sport: str, event_ids: List[str]) -> Dict[str, Any]:
+    async def get_odds(self, sport: str, _event_ids: list[str]) -> dict[str, Any]:
         """
         Fetch player prop projections for a sport/league.
         Returns: { projection_id: { player, stat_type, line, odds, game_id } }
 
-        event_ids are ignored (PrizePicks groups by league, not individual games),
+        _event_ids are ignored (PrizePicks groups by league, not individual games),
         but the game_id is included in each result so callers can filter downstream.
         """
         league_id = self.LEAGUE_MAP.get(sport.upper())
@@ -96,17 +104,17 @@ class PrizePicksBroker(SportsbookBroker):
 
         try:
             data = await self._get_with_retry(f"{self.BASE_URL}/projections", params)
-        except Exception as e:
-            logger.error(f"PrizePicks odds fetch failed: {e}")
+        except Exception:
+            logger.exception("PrizePicks odds fetch failed")
             return {}
 
         # Build player lookup from 'included'
-        players: Dict[str, str] = {}
+        players: dict[str, str] = {}
         for item in data.get("included", []):
             if item.get("type") == "new_player":
                 players[item["id"]] = item["attributes"].get("name", "Unknown")
 
-        odds_data: Dict[str, Any] = {}
+        odds_data: dict[str, Any] = {}
         for proj in data.get("data", []):
             try:
                 proj_id = proj["id"]
@@ -130,7 +138,7 @@ class PrizePicksBroker(SportsbookBroker):
 
         return odds_data
 
-    async def place_bet(self, legs: List[Dict], stake: float, odds: float) -> str:
+    async def place_bet(self, legs: list[dict], stake: float, odds: float) -> str:
         """
         SIMULATED — PrizePicks requires an authenticated session to place entries.
         For production: inject session cookies obtained via browser_cookie3 or
@@ -143,15 +151,10 @@ class PrizePicksBroker(SportsbookBroker):
         )
         return mock_id
 
-    async def check_bet_status(self, bet_id: str) -> Dict[str, Any]:
-        """
-        SIMULATED — In production, GET /entries/{entry_id} with auth headers.
-        """
+    async def check_bet_status(self, bet_id: str) -> dict[str, Any]:
+        """SIMULATED — In production, GET /entries/{entry_id} with auth headers."""
         if bet_id.startswith("PP_MOCK_"):
             return {"bet_id": bet_id, "status": "pending", "result": None, "source": "simulated"}
-        # Real implementation:
-        # resp = await self.client.get(f"{self.BASE_URL}/entries/{bet_id}")
-        # return resp.json()
         return {"bet_id": bet_id, "status": "unknown", "result": None}
 
     async def aclose(self):
