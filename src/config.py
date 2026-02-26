@@ -28,6 +28,12 @@ class Settings:
     # PrizePicks auth token (optional — needed for real bet placement)
     PRIZEPICKS_AUTH_TOKEN: str = os.getenv("PRIZEPICKS_AUTH_TOKEN", "")
 
+    # Risk management settings
+    RISK_BANKROLL: float = float(os.getenv("RISK_BANKROLL", "1000.0"))
+    RISK_MAX_DAILY_LOSS_PCT: float = float(os.getenv("RISK_MAX_DAILY_LOSS_PCT", "0.10"))
+    RISK_MAX_EXPOSURE_PCT: float = float(os.getenv("RISK_MAX_EXPOSURE_PCT", "0.20"))
+    RISK_KELLY_FRACTION: float = float(os.getenv("RISK_KELLY_FRACTION", "0.25"))
+
     # Logging level
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
