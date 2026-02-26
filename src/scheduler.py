@@ -89,7 +89,7 @@ async def daily_bet_assessment(app) -> None:
             max_legs=3,
         )
         logger.info(f"Optimizer returned {len(parlays)} parlay candidates")
-    except Exception as e:
+    except Exception:
         logger.exception("Parlay optimiser failed")
         return
 
