@@ -113,7 +113,7 @@ async def daily_bet_assessment(app) -> None:
             logger.info(f"Placed bet {bet_id} via {broker_name} (parlay {parlay.id})")
             placed += 1
 
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to place parlay %s", getattr(parlay, 'id', '?'))
 
     logger.info(f"=== Daily assessment complete — {placed} bet(s) placed ===")
@@ -128,7 +128,7 @@ async def resolve_bets(app) -> None:
 
     try:
         pending = await app.state.risk_manager.get_pending_bets()
-    except Exception as e:
+    except Exception:
         logger.exception("Could not fetch pending bets")
         return
 
@@ -144,7 +144,7 @@ async def resolve_bets(app) -> None:
                 await app.state.risk_manager.settle_bet(bet.id, status["result"])
                 logger.info(f"Settled bet {bet.bet_id}: result={status['result']}")
                 settled_count += 1
-        except Exception as e:
+        except Exception:
             logger.exception("Error resolving bet %s", bet.bet_id)
 
     logger.info(f"Bet resolution complete — {settled_count} settled out of {len(pending)} pending")
