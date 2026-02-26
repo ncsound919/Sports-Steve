@@ -189,7 +189,6 @@ class TestRiskManagerExposure:
     def setup_method(self):
         from src.risk_manager import RiskManager
         from src.risk_manager import Bet
-        from datetime import datetime, timezone
         self.rm = RiskManager(bankroll=1_000.0)
         self.Bet = Bet
 
