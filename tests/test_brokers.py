@@ -223,7 +223,37 @@ class TestRiskManagerExposure:
         exposure = self.rm.get_exposure()
         assert exposure["total_open_stake"] == 0.0
 
+    def test_exposure_with_zero_bankroll(self):
+        # Simulate a scenario where the bankroll is depleted to zero.
+        from datetime import datetime, timezone
+        self.rm.bankroll = 0.0
+        bet = self.Bet(
+            id="b3", bet_id="DK_3", broker_name="draftkings",
+            sport="NFL", legs=[], stake=50.0, odds=2.0,
+            expected_value=0.05,
+        )
+        self.rm._bets["b3"] = bet
+        exposure = self.rm.get_exposure()
+        assert exposure["total_open_stake"] == 50.0
+        # When bankroll is zero, the implementation uses a conditional to avoid
+        # division by zero. Verify that this path results in a finite exposure_pct.
+        assert exposure["exposure_pct"] == 0.0
 
+    def test_exposure_with_negative_bankroll(self):
+        # Simulate a scenario where the bankroll has gone negative after losses.
+        from datetime import datetime, timezone
+        self.rm.bankroll = -100.0
+        bet = self.Bet(
+            id="b4", bet_id="DK_4", broker_name="draftkings",
+            sport="NBA", legs=[], stake=75.0, odds=2.5,
+            expected_value=0.08,
+        )
+        self.rm._bets["b4"] = bet
+        exposure = self.rm.get_exposure()
+        assert exposure["total_open_stake"] == 75.0
+        # For non-positive bankroll, the conditional path should again avoid
+        # invalid percentages and keep exposure_pct at a safe default.
+        assert exposure["exposure_pct"] == 0.0
 class TestRiskManagerAuditTrail:
     """Tests for bet recording and settlement."""
 
