@@ -94,6 +94,8 @@ class RiskManager:
         -------
         Recommended stake in dollars (always >= 0).
         """
+        if win_probability < 0.0 or decimal_odds < 0.0:
+            return 0.0
         if decimal_odds <= 1.0 or not (0 < win_probability < 1):
             return 0.0
 
