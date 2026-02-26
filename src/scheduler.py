@@ -16,7 +16,7 @@ Usage (FastAPI lifespan):
 """
 
 import logging
-from typing import Dict
+from typing import Dict, Tuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -38,7 +38,7 @@ def _build_brokers() -> Dict[str, SportsbookBroker]:
     }
 
 
-def _select_broker(brokers: Dict[str, SportsbookBroker], sport: str) -> tuple[str, SportsbookBroker]:
+def _select_broker(brokers: Dict[str, SportsbookBroker], sport: str) -> Tuple[str, SportsbookBroker]:
     """
     Route a sport to the preferred broker.
     - Game lines (spreads/totals/ML) -> DraftKings
