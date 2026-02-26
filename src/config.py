@@ -34,6 +34,14 @@ class Settings:
     RISK_MAX_EXPOSURE_PCT: float = float(os.getenv("RISK_MAX_EXPOSURE_PCT", "0.20"))
     RISK_KELLY_FRACTION: float = float(os.getenv("RISK_KELLY_FRACTION", "0.25"))
 
+    # Circadian factoring
+    CIRCADIAN_ENABLED: bool = os.getenv("CIRCADIAN_ENABLED", "true").lower() == "true"
+
+    # Budgeting (daily / weekly / monthly limits; 0 = disabled)
+    BUDGET_DAILY_LIMIT: float = float(os.getenv("BUDGET_DAILY_LIMIT", "0.0"))
+    BUDGET_WEEKLY_LIMIT: float = float(os.getenv("BUDGET_WEEKLY_LIMIT", "0.0"))
+    BUDGET_MONTHLY_LIMIT: float = float(os.getenv("BUDGET_MONTHLY_LIMIT", "0.0"))
+
     # Logging level
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 

@@ -100,6 +100,8 @@ async def daily_bet_assessment(app) -> None:
         return
 
     placed = 0
+    budget_manager = getattr(app.state, "budget_manager", None)
+
     for parlay in parlays[:5]:           # cap at top 5 per day
         # Re-check stop-loss and exposure before each bet
         if risk_manager.check_stop_loss():
@@ -133,12 +135,23 @@ async def daily_bet_assessment(app) -> None:
             else:
                 stake = parlay.recommended_stake
 
+            # Check budget before placing
+            if budget_manager is not None and not budget_manager.can_spend(stake, sport=parlay.sport):
+                logger.warning(
+                    "Budget limit would be breached for parlay %s (stake=%.2f) — skipping.",
+                    parlay.id, stake,
+                )
+                continue
+
             bet_id = await broker.place_bet(
                 legs=[leg.__dict__ for leg in parlay.legs],
                 stake=stake,
                 odds=parlay.odds,
             )
             await risk_manager.record_bet(parlay, bet_id, broker_name)
+            # Record spend in budget manager
+            if budget_manager is not None:
+                budget_manager.record_spend(bet_id, stake, sport=parlay.sport, sportsbook=broker_name)
             logger.info(f"Placed bet {bet_id} via {broker_name} (parlay {parlay.id})")
             placed += 1
 
