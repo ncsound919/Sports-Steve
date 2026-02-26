@@ -1,0 +1,512 @@
+from .base import SportsbookBroker
+from .draftkings import DraftKingsBroker
+from .prizepicks import PrizePicksBroker
+
+__all__ = ["SportsbookBroker", "DraftKingsBroker", "PrizePicksBroker"]
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any
+
+
+class SportsbookBroker(ABC):
+    @abstractmethod
+    async def get_odds(self, sport: str, event_ids: List[str]) -> Dict[str, Any]:
+        """Fetch current odds for given events"""
+        pass
+
+    @abstractmethod
+    async def place_bet(self, legs: List[Dict], stake: float, odds: float) -> str:
+        """Place a bet (single or parlay) and return a confirmation ID"""
+        pass
+
+    @abstractmethod
+    async def check_bet_status(self, bet_id: str) -> Dict[str, Any]:
+        """Check if a bet has been settled and return outcome"""
+        pass
+import time
+import logging
+from typing import List, Dict, Any
+
+from .base import SportsbookBroker
+
+logger = logging.getLogger(__name__)
+
+# Requires: lukhed-sports = "^0.6.0" in pyproject.toml
+try:
+    from lukhed_sports import DkSportsbook
+    _DK_AVAILABLE = True
+except ImportError:
+    _DK_AVAILABLE = False
+    logger.warning("lukhed-sports not installed. Run: pip install lukhed-sports")
+
+
+class DraftKingsBroker(SportsbookBroker):
+    """
+    DraftKings broker using lukhed-sports for odds retrieval.
+
+    NOTE: Actual bet placement is NOT supported via any public API.
+    place_bet() is simulated. For production, you would need an
+    authenticated session (Selenium / manual cookie injection).
+    """
+
+    LEAGUE_MAP = {
+        "NFL": "nfl",
+        "NBA": "nba",
+        "NHL": "nhl",
+        "MLB": "mlb",
+        "NCAAFB": "ncaafb",
+        "NCAAMB": "ncaamb",
+        "MMA": "mma",
+        "GOLF": "golf",
+        "SOCCER": "soccer",
+    }
+
+    def __init__(self):
+        if not _DK_AVAILABLE:
+            raise ImportError("lukhed-sports is required: pip install lukhed-sports")
+        # DkSportsbook handles geo-location internally
+        self.client = DkSportsbook()
+
+    async def get_odds(self, sport: str, event_ids: List[str]) -> Dict[str, Any]:
+        """
+        Fetch game lines for a league and filter by event_ids.
+        Returns: { event_id: game_data_dict }
+        """
+        league = self.LEAGUE_MAP.get(sport.upper(), sport.lower())
+        try:
+            lines = self.client.get_game_lines_for_league(league)
+            if event_ids:
+                return {
+                    game["event_id"]: game
+                    for game in lines
+                    if game.get("event_id") in event_ids
+                }
+            # Return all if no filter
+            return {game["event_id"]: game for game in lines}
+        except Exception as e:
+            logger.error(f"DraftKings odds fetch failed for {sport}: {e}")
+            return {}
+
+    async def place_bet(self, legs: List[Dict], stake: float, odds: float) -> str:
+        """
+        SIMULATED — DraftKings has no public bet-placement API.
+        Replace with authenticated session logic for production.
+        """
+        mock_id = f"DK_MOCK_{int(time.time())}"
+        logger.info(
+            f"[SIMULATED] DraftKings bet | id={mock_id} | "
+            f"legs={len(legs)} | stake=${stake:.2f} | odds={odds}"
+        )
+        return mock_id
+
+    async def check_bet_status(self, bet_id: str) -> Dict[str, Any]:
+        """
+        SIMULATED — In production, poll DraftKings API or use webhook.
+        """
+        if bet_id.startswith("DK_MOCK_"):
+            return {"bet_id": bet_id, "status": "pending", "result": None, "source": "simulated"}
+        # Real implementation would call an authenticated endpoint here
+        return {"bet_id": bet_id, "status": "unknown", "result": None}
+import time
+import logging
+import asyncio
+from typing import List, Dict, Any, Optional
+
+import httpx
+
+from .base import SportsbookBroker
+
+logger = logging.getLogger(__name__)
+
+
+class PrizePicksBroker(SportsbookBroker):
+    """
+    PrizePicks broker using their public projections API for odds/props retrieval.
+
+    NOTE: place_bet() is simulated — placing real entries requires an
+    authenticated session with session cookies + optional 2FA handling.
+    """
+
+    BASE_URL = "https://api.prizepicks.com"
+
+    # PrizePicks league IDs (verify periodically — these can change)
+    LEAGUE_MAP: Dict[str, int] = {
+        "NBA": 7,
+        "NFL": 5,
+        "NHL": 9,
+        "MLB": 3,
+        "WNBA": 8,
+        "CFB": 11,
+        "CBB": 12,
+        "MMA": 2,
+        "GOLF": 14,
+        "ESPORTS": 10,
+        "SOCCER": 6,
+    }
+
+    def __init__(
+        self,
+        auth_token: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+    ):
+        self.auth_token = auth_token
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; BettingAgent/3.0)",
+            "Referer": "https://app.prizepicks.com/",
+            "Accept": "application/json",
+        }
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+
+        self.client = httpx.AsyncClient(headers=headers, timeout=15.0)
+
+    async def _get_with_retry(self, url: str, params: Dict) -> Dict:
+        """GET with exponential-backoff retry on rate-limit (429) or server errors."""
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = await self.client.get(url, params=params)
+                if resp.status_code == 429:
+                    wait = self.retry_delay * attempt
+                    logger.warning(f"PrizePicks rate-limited. Retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"PrizePicks HTTP error (attempt {attempt}): {e}")
+                if attempt == self.max_retries:
+                    raise
+                await asyncio.sleep(self.retry_delay)
+            except httpx.RequestError as e:
+                logger.error(f"PrizePicks request error (attempt {attempt}): {e}")
+                if attempt == self.max_retries:
+                    raise
+                await asyncio.sleep(self.retry_delay)
+        return {}
+
+    async def get_odds(self, sport: str, event_ids: List[str]) -> Dict[str, Any]:
+        """
+        Fetch player prop projections for a sport/league.
+        Returns: { projection_id: { player, stat_type, line, odds, game_id } }
+
+        event_ids are ignored (PrizePicks groups by league, not individual games),
+        but the game_id is included in each result so callers can filter downstream.
+        """
+        league_id = self.LEAGUE_MAP.get(sport.upper())
+        if league_id is None:
+            logger.warning(f"Unknown PrizePicks league for sport '{sport}'. Defaulting to NBA (7).")
+            league_id = 7
+
+        params = {"league_id": league_id, "per_page": 250, "single_stat": True}
+
+        try:
+            data = await self._get_with_retry(f"{self.BASE_URL}/projections", params)
+        except Exception as e:
+            logger.error(f"PrizePicks odds fetch failed: {e}")
+            return {}
+
+        # Build player lookup from 'included'
+        players: Dict[str, str] = {}
+        for item in data.get("included", []):
+            if item.get("type") == "new_player":
+                players[item["id"]] = item["attributes"].get("name", "Unknown")
+
+        odds_data: Dict[str, Any] = {}
+        for proj in data.get("data", []):
+            try:
+                proj_id = proj["id"]
+                attrs = proj["attributes"]
+                player_id = proj["relationships"]["new_player"]["data"]["id"]
+                game_rel = proj["relationships"].get("game", {}).get("data") or {}
+
+                odds_data[proj_id] = {
+                    "player": players.get(player_id, "Unknown"),
+                    "player_id": player_id,
+                    "stat_type": attrs.get("stat_type"),
+                    "line": float(attrs.get("line_score", 0)),
+                    "odds": attrs.get("odds"),          # decimal odds if provided
+                    "game_id": game_rel.get("id"),
+                    "description": attrs.get("description", ""),
+                    "start_time": attrs.get("start_time"),
+                    "is_promo": attrs.get("is_promo", False),
+                }
+            except (KeyError, TypeError, ValueError) as e:
+                logger.debug(f"Skipping malformed projection {proj.get('id')}: {e}")
+
+        return odds_data
+
+    async def place_bet(self, legs: List[Dict], stake: float, odds: float) -> str:
+        """
+        SIMULATED — PrizePicks requires an authenticated session to place entries.
+        For production: inject session cookies obtained via browser_cookie3 or
+        manual login, then POST to /entries with the leg selection payload.
+        """
+        mock_id = f"PP_MOCK_{int(time.time())}"
+        logger.info(
+            f"[SIMULATED] PrizePicks entry | id={mock_id} | "
+            f"legs={len(legs)} | stake=${stake:.2f} | odds={odds}"
+        )
+        return mock_id
+
+    async def check_bet_status(self, bet_id: str) -> Dict[str, Any]:
+        """
+        SIMULATED — In production, GET /entries/{entry_id} with auth headers.
+        """
+        if bet_id.startswith("PP_MOCK_"):
+            return {"bet_id": bet_id, "status": "pending", "result": None, "source": "simulated"}
+        # Real implementation:
+        # resp = await self.client.get(f"{self.BASE_URL}/entries/{bet_id}")
+        # return resp.json()
+        return {"bet_id": bet_id, "status": "unknown", "result": None}
+
+    async def aclose(self):
+        """Close the underlying HTTP client."""
+        await self.client.aclose()
+"""
+src/scheduler.py
+
+Scheduled tasks for daily bet assessment and hourly bet resolution.
+Attach to your FastAPI app lifespan or run standalone.
+
+Usage (FastAPI lifespan):
+    from src.scheduler import create_scheduler
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        scheduler = create_scheduler(app)
+        scheduler.start()
+        yield
+        scheduler.shutdown()
+"""
+
+import logging
+from typing import Dict
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from src.brokers.draftkings import DraftKingsBroker
+from src.brokers.prizepicks import PrizePicksBroker
+from src.brokers.base import SportsbookBroker
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Broker routing helpers
+# ---------------------------------------------------------------------------
+
+def _build_brokers() -> Dict[str, SportsbookBroker]:
+    return {
+        "draftkings": DraftKingsBroker(),
+        "prizepicks": PrizePicksBroker(),
+    }
+
+
+def _select_broker(brokers: Dict[str, SportsbookBroker], sport: str) -> tuple[str, SportsbookBroker]:
+    """
+    Route a sport to the preferred broker.
+    - Game lines (spreads/totals/ML) → DraftKings
+    - Player props              → PrizePicks
+    Adjust this logic to fit your strategy.
+    """
+    game_line_sports = {"NFL", "NBA", "NHL", "MLB", "NCAAFB", "NCAAMB"}
+    if sport.upper() in game_line_sports:
+        return "draftkings", brokers["draftkings"]
+    return "prizepicks", brokers["prizepicks"]
+
+
+def validate_edge(parlay, current_odds: dict) -> bool:
+    """
+    Stub — replace with your real edge-validation logic.
+    Return True if the parlay still has positive expected value
+    based on freshly-fetched odds.
+    """
+    return bool(current_odds)  # placeholder: always valid if odds returned
+
+
+# ---------------------------------------------------------------------------
+# Scheduled tasks
+# ---------------------------------------------------------------------------
+
+async def daily_bet_assessment(app) -> None:
+    """
+    Run once per day (default 09:00 local).
+    1. Generate optimised parlays via your ParlayOptimizer.
+    2. Validate edge against live odds.
+    3. Place top-N bets and record them in the DB.
+    """
+    logger.info("=== Daily bet assessment starting ===")
+    brokers = _build_brokers()
+
+    # -- Import here to avoid circular deps at module load time --
+    from src.optimization.parlay_builder import ParlayOptimizer  # noqa: F401
+    from src.config import settings                               # noqa: F401
+
+    try:
+        optimizer = ParlayOptimizer(
+            risk_profile="balanced",
+            # pass any other kwargs your optimizer needs
+        )
+        parlays = await optimizer.generate_optimized_parlays(
+            sports=settings.ACTIVE_SPORTS,
+            min_edge=0.05,
+            max_legs=3,
+        )
+        logger.info(f"Optimizer returned {len(parlays)} parlay candidates")
+    except Exception as e:
+        logger.error(f"Parlay optimiser failed: {e}", exc_info=True)
+        return
+
+    placed = 0
+    for parlay in parlays[:5]:           # cap at top 5 per day
+        broker_name, broker = _select_broker(brokers, parlay.sport)
+        try:
+            event_ids = [leg.event_id for leg in parlay.legs]
+            current_odds = await broker.get_odds(parlay.sport, event_ids)
+
+            if not validate_edge(parlay, current_odds):
+                logger.info(f"Edge no longer valid for parlay {parlay.id}, skipping")
+                continue
+
+            bet_id = await broker.place_bet(
+                legs=[leg.__dict__ for leg in parlay.legs],
+                stake=parlay.recommended_stake,
+                odds=parlay.odds,
+            )
+            await app.state.risk_manager.record_bet(parlay, bet_id, broker_name)
+            logger.info(f"Placed bet {bet_id} via {broker_name} (parlay {parlay.id})")
+            placed += 1
+
+        except Exception as e:
+            logger.error(f"Failed to place parlay {getattr(parlay, 'id', '?')}: {e}", exc_info=True)
+
+    logger.info(f"=== Daily assessment complete — {placed} bet(s) placed ===")
+
+
+async def resolve_bets(app) -> None:
+    """
+    Run hourly — check pending bets and settle any that have results.
+    """
+    logger.info("Checking pending bets for settlement...")
+    brokers = _build_brokers()
+
+    try:
+        pending = await app.state.risk_manager.get_pending_bets()
+    except Exception as e:
+        logger.error(f"Could not fetch pending bets: {e}", exc_info=True)
+        return
+
+    settled_count = 0
+    for bet in pending:
+        broker = brokers.get(bet.broker_name)
+        if broker is None:
+            logger.warning(f"Unknown broker '{bet.broker_name}' for bet {bet.bet_id}")
+            continue
+        try:
+            status = await broker.check_bet_status(bet.bet_id)
+            if status.get("status") == "settled":
+                await app.state.risk_manager.settle_bet(bet.id, status["result"])
+                logger.info(f"Settled bet {bet.bet_id}: result={status['result']}")
+                settled_count += 1
+        except Exception as e:
+            logger.error(f"Error resolving bet {bet.bet_id}: {e}", exc_info=True)
+
+    logger.info(f"Bet resolution complete — {settled_count} settled out of {len(pending)} pending")
+
+
+# ---------------------------------------------------------------------------
+# Scheduler factory
+# ---------------------------------------------------------------------------
+
+def create_scheduler(app) -> AsyncIOScheduler:
+    """
+    Build and return a configured AsyncIOScheduler.
+    Call scheduler.start() in your app lifespan, scheduler.shutdown() on teardown.
+
+    Jobs:
+        - daily_bet_assessment  → every day at 09:00
+        - resolve_bets          → every hour at :05 past the hour
+    """
+    scheduler = AsyncIOScheduler()
+
+    scheduler.add_job(
+        daily_bet_assessment,
+        trigger="cron",
+        hour=9,
+        minute=0,
+        id="daily_bet_assessment",
+        args=[app],
+        replace_existing=True,
+        misfire_grace_time=300,    # allow up to 5 min late start
+    )
+
+    scheduler.add_job(
+        resolve_bets,
+        trigger="cron",
+        minute=5,                  # runs at HH:05 every hour
+        id="resolve_bets",
+        args=[app],
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+
+    logger.info("Scheduler configured: daily_bet_assessment @ 09:00, resolve_bets @ *:05")
+    return scheduler
+"""
+src/main.py  — FastAPI app with scheduler wired into lifespan.
+
+Paste this lifespan block into your existing main.py (or adapt it).
+"""
+
+from contextlib import asynccontextmanager
+import logging
+
+from fastapi import FastAPI
+
+from src.scheduler import create_scheduler
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ---- startup ----
+    scheduler = create_scheduler(app)
+    scheduler.start()
+    logger.info("APScheduler started")
+
+    yield  # app is running
+
+    # ---- shutdown ----
+    scheduler.shutdown(wait=False)
+    logger.info("APScheduler stopped")
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Optional: manual trigger endpoint for testing / CI
+# ---------------------------------------------------------------------------
+from fastapi import APIRouter, BackgroundTasks  # noqa: E402
+
+router = APIRouter(prefix="/api/v1", tags=["scheduler"])
+
+
+@router.post("/daily-run", summary="Manually trigger the daily bet assessment")
+async def trigger_daily_run(background_tasks: BackgroundTasks):
+    from src.scheduler import daily_bet_assessment
+    background_tasks.add_task(daily_bet_assessment, app)
+    return {"status": "queued", "job": "daily_bet_assessment"}
+
+
+@router.post("/resolve-bets", summary="Manually trigger bet resolution")
+async def trigger_resolve_bets(background_tasks: BackgroundTasks):
+    from src.scheduler import resolve_bets
+    background_tasks.add_task(resolve_bets, app)
+    return {"status": "queued", "job": "resolve_bets"}
+
+
+app.include_router(router)
