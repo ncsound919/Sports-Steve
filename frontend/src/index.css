@@ -1,0 +1,179 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base ────────────────────────────────────────────── */
+
+:root {
+  --bg-base: #050505;
+  --green-primary: #00E676;
+  --red-primary: #FF1744;
+  --glass-bg: rgba(15, 15, 15, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-blur: 20px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+body {
+  background: var(--bg-base);
+  min-height: 100vh;
+}
+
+/* ─── Glassmorphic Utilities ──────────────────────────── */
+
+@layer components {
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+  }
+
+  .glass-sm {
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+  }
+
+  .glass-hover {
+    transition: all 0.3s ease;
+  }
+
+  .glass-hover:hover {
+    background: rgba(25, 25, 25, 0.85);
+    border-color: rgba(255, 255, 255, 0.12);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .glass-active {
+    background: rgba(35, 35, 35, 0.9);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+
+  .glass-sidebar {
+    background: rgba(10, 10, 10, 0.9);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
+    border-right: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  /* Glow Effects */
+  .glow-green {
+    box-shadow: 0 0 20px rgba(0, 230, 118, 0.1),
+                0 0 60px rgba(0, 230, 118, 0.05);
+  }
+
+  .glow-red {
+    box-shadow: 0 0 20px rgba(255, 23, 68, 0.1),
+                0 0 60px rgba(255, 23, 68, 0.05);
+  }
+
+  .glow-green-strong {
+    box-shadow: 0 0 30px rgba(0, 230, 118, 0.2),
+                0 0 80px rgba(0, 230, 118, 0.1);
+  }
+
+  .glow-red-strong {
+    box-shadow: 0 0 30px rgba(255, 23, 68, 0.2),
+                0 0 80px rgba(255, 23, 68, 0.1);
+  }
+
+  /* Gradient Text */
+  .text-gradient-green {
+    background: linear-gradient(135deg, #00E676, #69F0AE);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .text-gradient-red {
+    background: linear-gradient(135deg, #FF1744, #FF616F);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Beginner Mode Tooltip */
+  .beginner-tip {
+    position: relative;
+  }
+
+  .beginner-tip::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20, 20, 20, 0.95);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.8);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    z-index: 50;
+  }
+
+  .beginner-tip:hover::after {
+    opacity: 1;
+  }
+
+  /* Stat value animations */
+  .stat-value {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  /* Background pattern */
+  .bg-grid {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+}
+
+/* ─── Page Transitions ────────────────────────────────── */
+
+.page-enter {
+  animation: fade-in 0.3s ease-out, slide-up 0.4s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
