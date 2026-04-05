@@ -1,7 +1,28 @@
 node_modules/
 dist/
-.env
-.env.local
 *.log
 __pycache__/
 *.pyc
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Database
+*.db
+*.sqlite
+
+# Sessions
+sessions/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Local caches
+lukhed_sports_local_cache/

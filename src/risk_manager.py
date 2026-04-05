@@ -216,6 +216,10 @@ class RiskManager:
         broker_name:
             Key identifying the broker (e.g. "draftkings", "prizepicks").
         """
+        stake = getattr(parlay, "recommended_stake", 0.0)
+        if stake > self.bankroll:
+            raise ValueError(f"Insufficient bankroll: ${self.bankroll:.2f} < ${stake:.2f}")
+
         record_id = str(uuid.uuid4())
         bet = Bet(
             id=record_id,
@@ -223,7 +227,7 @@ class RiskManager:
             broker_name=broker_name,
             sport=getattr(parlay, "sport", "unknown"),
             legs=[leg.__dict__ if hasattr(leg, "__dict__") else leg for leg in getattr(parlay, "legs", [])],
-            stake=getattr(parlay, "recommended_stake", 0.0),
+            stake=stake,
             odds=getattr(parlay, "odds", 0.0),
             expected_value=getattr(parlay, "expected_value", 0.0),
         )
@@ -271,6 +275,7 @@ class RiskManager:
                 logger.info("Bet %s WON — profit=%.2f new_bankroll=%.2f", bet.bet_id, profit, self.bankroll)
             elif result == "lost":
                 self.bankroll -= bet.stake
+                self.bankroll = max(0.0, self.bankroll)
                 self._daily_pnl -= bet.stake
                 logger.info("Bet %s LOST — stake=%.2f new_bankroll=%.2f", bet.bet_id, bet.stake, self.bankroll)
                 # Re-evaluate stop-loss after a loss
