@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { GlassCard } from '../components/ui/GlassCard';
 import { useMode } from '../contexts/ModeContext';
+import { convertFromDecimal, convertFromAmerican, convertFromFractional } from '../lib/betBuddy';
 
 type OddsFormat = 'american' | 'decimal' | 'fractional';
 
@@ -9,80 +10,45 @@ interface ConversionResult {
   decimal: string;
   fractional: string;
   impliedProbability: string;
+  // NOTE: potentialReturn and profit below are computed using a hardcoded $100 stake for
+  // internal reference only. They are NOT rendered — the UI uses stakeNum from component
+  // state to calculate potReturn/profit instead.
   potentialReturn: string;
   profit: string;
 }
 
-/* ─── Pure conversion functions (no backend needed) ─── */
-
-function americanToDecimal(american: number): number {
-  return american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
-}
-
-function decimalToAmerican(decimal: number): number {
-  return decimal >= 2 ? (decimal - 1) * 100 : -100 / (decimal - 1);
-}
-
-function decimalToFractional(decimal: number): string {
-  const fraction = decimal - 1;
-  const denominators = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20, 25, 33, 40, 50, 100];
-  let bestNum = Math.round(fraction);
-  let bestDen = 1;
-  let bestErr = Math.abs(fraction - bestNum);
-
-  for (const den of denominators) {
-    const num = Math.round(fraction * den);
-    const err = Math.abs(fraction - num / den);
-    if (err < bestErr) {
-      bestNum = num;
-      bestDen = den;
-      bestErr = err;
-    }
-  }
-  return `${bestNum}/${bestDen}`;
-}
-
-function fractionalToDecimal(fractional: string): number {
-  const [num, den] = fractional.split('/').map(Number);
-  if (!num || !den) return 2.0;
-  return num / den + 1;
-}
-
-function impliedProb(decimal: number): number {
-  return (1 / decimal) * 100;
-}
+/* ─── Convert using betBuddy library ─── */
 
 function convert(value: string, format: OddsFormat): ConversionResult | null {
-  let decimal: number;
-
   try {
+    let odds;
     if (format === 'american') {
       const am = parseFloat(value.replace('+', ''));
       if (isNaN(am) || am === 0) return null;
-      decimal = americanToDecimal(am);
+      odds = convertFromAmerican(am);
     } else if (format === 'decimal') {
-      decimal = parseFloat(value);
-      if (isNaN(decimal) || decimal <= 1) return null;
+      const dec = parseFloat(value);
+      if (isNaN(dec) || dec <= 1) return null;
+      odds = convertFromDecimal(dec);
     } else {
-      decimal = fractionalToDecimal(value);
-      if (isNaN(decimal) || decimal <= 1) return null;
+      if (!value.includes('/')) return null;
+      odds = convertFromFractional(value);
     }
+
+    const stake = 100;
+    const ret = odds.decimal * stake;
+
+    return {
+      american: odds.american > 0 ? `+${Math.round(odds.american)}` : `${Math.round(odds.american)}`,
+      decimal: odds.decimal.toFixed(3),
+      fractional: odds.fractional,
+      impliedProbability: `${odds.impliedProbability.toFixed(1)}%`,
+      potentialReturn: `$${ret.toFixed(2)}`,
+      profit: `$${(ret - stake).toFixed(2)}`,
+    };
   } catch {
     return null;
   }
-
-  const am = decimalToAmerican(decimal);
-  const stake = 100;
-  const ret = decimal * stake;
-
-  return {
-    american: am > 0 ? `+${Math.round(am)}` : `${Math.round(am)}`,
-    decimal: decimal.toFixed(3),
-    fractional: decimalToFractional(decimal),
-    impliedProbability: `${impliedProb(decimal).toFixed(1)}%`,
-    potentialReturn: `$${ret.toFixed(2)}`,
-    profit: `$${(ret - stake).toFixed(2)}`,
-  };
 }
 
 export default function OddsCalculator() {
@@ -91,10 +57,21 @@ export default function OddsCalculator() {
   const [inputValue, setInputValue] = useState('');
   const [stake, setStake] = useState('10');
   const [result, setResult] = useState<ConversionResult | null>(null);
+  const [inputError, setInputError] = useState<string | null>(null);
 
   const handleConvert = useCallback(() => {
     const r = convert(inputValue, inputFormat);
     setResult(r);
+    if (!r && inputValue.length > 0) {
+      if (inputFormat === 'decimal') {
+        const dec = parseFloat(inputValue);
+        setInputError(!isNaN(dec) && dec <= 1 ? 'Decimal odds must be greater than 1.00' : 'Invalid odds value');
+      } else {
+        setInputError('Invalid odds value');
+      }
+    } else {
+      setInputError(null);
+    }
   }, [inputValue, inputFormat]);
 
   const handleInputChange = (val: string) => {
@@ -102,8 +79,16 @@ export default function OddsCalculator() {
     if (val.length > 0) {
       const r = convert(val, inputFormat);
       setResult(r);
+      if (!r && inputFormat === 'decimal') {
+        const dec = parseFloat(val);
+        // Show inline error for the specific case of dec <= 1 (common user mistake)
+        setInputError(!isNaN(dec) && dec <= 1 ? 'Decimal odds must be greater than 1.00' : null);
+      } else {
+        setInputError(null);
+      }
     } else {
       setResult(null);
+      setInputError(null);
     }
   };
 
@@ -168,10 +153,11 @@ export default function OddsCalculator() {
               <button
                 key={fmt}
                 onClick={() => {
-                  setInputFormat(fmt);
-                  setResult(null);
-                  setInputValue('');
-                }}
+                    setInputFormat(fmt);
+                    setResult(null);
+                    setInputValue('');
+                    setInputError(null);
+                  }}
                 className={`flex-1 py-2 text-xs font-semibold uppercase tracking-wider rounded-lg
                   transition-all duration-200
                   ${inputFormat === fmt
@@ -207,6 +193,9 @@ export default function OddsCalculator() {
                          focus:outline-none focus:border-win/40 focus:ring-1 focus:ring-win/20
                          transition-all duration-200"
               />
+              {inputError && (
+                <p className="mt-1.5 text-xs text-loss">{inputError}</p>
+              )}
             </div>
 
             <div>
@@ -269,11 +258,13 @@ export default function OddsCalculator() {
                   <span className="text-lg font-bold text-white">{result.impliedProbability}</span>
                 </div>
                 <div className="h-2 rounded-full bg-white/[0.04] overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-win to-win-light transition-all duration-500"
-                    style={{ width: result.impliedProbability }}
-                  />
-                </div>
+                   <div
+                     className="h-full rounded-full bg-gradient-to-r from-win to-win-light transition-all duration-500"
+                     // Clamp to max 100% — impliedProbability is a string like "52.4%"; parse
+                     // it to prevent the bar from overflowing its container on extreme odds.
+                     style={{ width: `${Math.min(parseFloat(result.impliedProbability) || 0, 100)}%` }}
+                   />
+                 </div>
                 {isBeginner && (
                   <p className="text-[10px] text-text-muted mt-2">
                     The sportsbook thinks there's a {result.impliedProbability} chance this happens.

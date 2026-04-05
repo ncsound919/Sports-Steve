@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import { GlassCard, StatCard } from '../components/ui/GlassCard';
+import ExportMenu from '../components/ui/ExportMenu';
 import { useMode } from '../contexts/ModeContext';
+import { useLocalSync } from '../hooks/useLocalSync';
 
 /* ─── Kelly Criterion Calculator ─────────────────────── */
 
 function kellyFraction(winProb: number, odds: number): number {
-  // Kelly formula: f* = (bp - q) / b
-  // b = decimal odds - 1 (net odds)
-  // p = win probability, q = 1 - p
+  // Guard: Kelly is undefined when odds <= 1 (no profit possible); return 0 (no bet).
+  if (odds <= 1) return 0;
   const b = odds - 1;
   const p = winProb;
   const q = 1 - p;
@@ -17,42 +18,85 @@ function kellyFraction(winProb: number, odds: number): number {
 
 export default function BankrollManager() {
   const { isBeginner } = useMode();
+  const { accounts, budgets, offline, lastSynced } = useLocalSync(60_000);
 
   // Bankroll state
   const [bankroll, setBankroll] = useState('100');
   const [winProb, setWinProb] = useState('55');
   const [decimalOdds, setDecimalOdds] = useState('2.00');
-  const [kellyMultiplier, setKellyMultiplier] = useState('0.25'); // Quarter Kelly
+  const [kellyMultiplier, setKellyMultiplier] = useState('0.25');
 
   const bankrollNum = parseFloat(bankroll) || 0;
   const winProbNum = (parseFloat(winProb) || 0) / 100;
-  const oddsNum = parseFloat(decimalOdds) || 2;
+  // Parse odds without a fallback default — empty/invalid input produces NaN which
+  // kellyFraction handles by returning 0 (odds <= 1 guard) or via isNaN checks below.
+  const oddsNum = parseFloat(decimalOdds);
   const kellyMult = parseFloat(kellyMultiplier) || 0.25;
 
-  const fullKelly = kellyFraction(winProbNum, oddsNum);
+  const fullKelly = isNaN(oddsNum) ? 0 : kellyFraction(winProbNum, oddsNum);
   const adjustedKelly = fullKelly * kellyMult;
   const suggestedStake = bankrollNum * adjustedKelly;
-  const ev = (winProbNum * (oddsNum - 1) - (1 - winProbNum)) * suggestedStake;
+  // Guard NaN: if inputs are invalid, ev is shown as N/A in the UI.
+  const evRaw = (winProbNum * (oddsNum - 1) - (1 - winProbNum)) * suggestedStake;
+  const ev = isNaN(evRaw) ? null : evRaw;
 
-  // Mock budget data
-  const budgetData = {
-    daily: { limit: 25, used: 8.50 },
-    weekly: { limit: 100, used: 34.20 },
-    monthly: { limit: 300, used: 112.75 },
-  };
+  // Map budgets from IndexedDB format
+  const budgetData: Record<string, { limit: number; used: number }> = {};
+  for (const b of budgets) {
+    if (b.limit > 0) {
+      budgetData[b.period] = { limit: b.limit, used: b.spent };
+    }
+  }
+
+  // Map accounts for display
+  const accountList = accounts.map((a) => {
+    let status = 'healthy';
+    if (a.is_limited) status = 'limited';
+    else if (a.is_gubbed) status = 'gubbed';
+    else if (a.balance < 10) status = 'low_balance';
+    return { book: a.name, balance: a.balance, status };
+  });
+
+  // Export data for accounts
+  const accountExportData = accounts.map((a) => ({
+    name: a.name,
+    balance: a.balance,
+    total_winnings: a.total_bet_winnings,
+    total_losses: a.total_bet_losses,
+    net_pnl: a.net_betting_pnl,
+    is_limited: a.is_limited,
+    is_gubbed: a.is_gubbed,
+    transactions: a.transaction_count,
+  }));
+
+  const syncLabel = lastSynced
+    ? `Synced ${new Date(lastSynced).toLocaleTimeString()}`
+    : null;
 
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold font-display tracking-tight">
-          {isBeginner ? 'My Money' : 'Bankroll Manager'}
-        </h1>
-        <p className="text-text-secondary mt-1 text-sm">
-          {isBeginner
-            ? 'Keep track of your betting money and learn how much to bet.'
-            : 'Kelly criterion sizing, budget tracking, and risk management.'}
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold font-display tracking-tight">
+            {isBeginner ? 'My Money' : 'Bankroll Manager'}
+          </h1>
+          <p className="text-text-secondary mt-1 text-sm">
+            {isBeginner
+              ? 'Keep track of your betting money and learn how much to bet.'
+              : 'Kelly criterion sizing, budget tracking, and risk management.'}
+          </p>
+          {syncLabel && (
+            <p className="text-[10px] text-text-muted mt-0.5">{syncLabel}</p>
+          )}
+        </div>
+        {accounts.length > 0 && (
+          <ExportMenu
+            data={accountExportData}
+            filename="sportsbook-accounts"
+            label={isBeginner ? "Save Accounts" : "Export Accounts"}
+          />
+        )}
       </div>
 
       {/* Beginner Explainer */}
@@ -68,9 +112,28 @@ export default function BankrollManager() {
         </GlassCard>
       )}
 
+      {/* Offline Banner */}
+      {offline && (
+        <div className="px-4 py-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
+          Backend is offline -- showing locally saved account data.
+          {accounts.length > 0 && ` ${accounts.length} accounts cached on this device.`}
+        </div>
+      )}
+
+      {/* Local storage indicator */}
+      {accounts.length > 0 && (
+        <div className="px-3 py-2 rounded-lg bg-win/5 border border-win/10 text-[10px] text-text-muted flex items-center gap-2">
+          <div className="w-1.5 h-1.5 rounded-full bg-win" />
+          <span>
+            Account data is stored locally. Use Export to download your sportsbook balances anytime.
+          </span>
+        </div>
+      )}
+
       {/* Budget Overview */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {Object.entries(budgetData).map(([period, data]) => {
+        {Object.keys(budgetData).length > 0 ? (
+          Object.entries(budgetData).map(([period, data]) => {
           const pct = (data.used / data.limit) * 100;
           const isNear = pct > 75;
           return (
@@ -110,7 +173,16 @@ export default function BankrollManager() {
               )}
             </GlassCard>
           );
-        })}
+        })
+        ) : (
+          <GlassCard className="md:col-span-3">
+            <p className="text-sm text-text-muted text-center py-4">
+              {offline
+                ? 'Budget data unavailable while backend is offline.'
+                : 'No budget limits configured. Set them in Settings to track spending.'}
+            </p>
+          </GlassCard>
+        )}
       </div>
 
       {/* Kelly Criterion Calculator */}
@@ -240,13 +312,13 @@ export default function BankrollManager() {
                   </p>
                 </div>
                 <div className="glass-sm p-3 text-center">
-                  <p className="text-xs text-text-muted mb-1">
-                    {isBeginner ? 'Expected Profit' : 'Expected Value'}
-                  </p>
-                  <p className={`text-lg font-bold ${ev >= 0 ? 'text-win' : 'text-loss'}`}>
-                    {ev >= 0 ? '+' : ''}${ev.toFixed(2)}
-                  </p>
-                </div>
+                   <p className="text-xs text-text-muted mb-1">
+                     {isBeginner ? 'Expected Profit' : 'Expected Value'}
+                   </p>
+                   <p className={`text-lg font-bold ${ev === null ? 'text-text-muted' : ev >= 0 ? 'text-win' : 'text-loss'}`}>
+                     {ev === null ? 'N/A' : `${ev >= 0 ? '+' : ''}$${ev.toFixed(2)}`}
+                   </p>
+                 </div>
               </div>
 
               {isBeginner && (
@@ -268,11 +340,20 @@ export default function BankrollManager() {
                   <div className="flex justify-between">
                     <span>Growth rate (log utility)</span>
                     <span className="text-white">
-                      {(winProbNum * Math.log(1 + adjustedKelly * (oddsNum - 1)) +
-                        (1 - winProbNum) * Math.log(1 - adjustedKelly) || 0).toFixed(4)}
+                      {(() => {
+                        // Clamp adjustedKelly to [0, 0.9999] before log to prevent -Infinity
+                        // when Kelly fraction >= 1 (pathological edge case).
+                        const safeKelly = Math.min(adjustedKelly, 0.9999);
+                        const g =
+                          winProbNum * Math.log(1 + safeKelly * (oddsNum - 1)) +
+                          (1 - winProbNum) * Math.log(1 - safeKelly);
+                        return isNaN(g) ? 'N/A' : (g || 0).toFixed(4);
+                      })()}
                     </span>
                   </div>
                   <div className="flex justify-between">
+                    {/* NOTE: Ruin probability formula below assumes even-money bets only.
+                        It will overestimate ruin at higher odds — treat as a rough indicator. */}
                     <span>Ruin probability (est.)</span>
                     <span className="text-white">
                       {Math.max(0, ((1 - winProbNum) / winProbNum) ** (bankrollNum / suggestedStake || 1) * 100).toFixed(2)}%
@@ -295,15 +376,11 @@ export default function BankrollManager() {
       </div>
 
       {/* Account Health (Expert) */}
-      {!isBeginner && (
+      {!isBeginner && accountList.length > 0 && (
         <div>
           <h2 className="text-lg font-semibold font-display mb-4">Account Health</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {([
-              { book: 'DraftKings', balance: 45.20, status: 'healthy' },
-              { book: 'PrizePicks', balance: 8.99, status: 'healthy' },
-              { book: 'FanDuel', balance: 0, status: 'low_balance' },
-            ] as { book: string; balance: number; status: string }[]).map((acct) => (
+            {accountList.map((acct) => (
               <StatCard
                 key={acct.book}
                 label={acct.book}

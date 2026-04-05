@@ -1,29 +1,73 @@
 /**
- * Unified API client for Sports Steve (FastAPI) and Bet Buddy (Express) backends.
- * In dev, Vite proxies /api/steve → :8010 and /api/buddy → :3001.
- * In production, configure your reverse proxy accordingly.
+ * API client for Sports Steve (FastAPI) backend.
+ * In dev, Vite proxies /api/steve -> :8010.
+ * In production, set VITE_STEVE_API_URL env var in Vercel.
+ * Example:
+ *   VITE_STEVE_API_URL=https://sports-steve-api.railway.app/api/v1
+ *
+ * NOTE: Bet Buddy functionality is now handled client-side via src/lib/betBuddy.ts.
+ * No backend needed for odds, stats, bankroll math, or data export.
+ *
+ * AUTH NOTE: Authentication tokens are handled by the backend via session cookies
+ * (HttpOnly). No explicit Authorization header is needed on the frontend — the
+ * browser includes cookies automatically. Cross-origin requests rely on
+ * credentials: 'include' if the backend is on a different origin.
  */
 
-const STEVE_BASE = '/api/steve';
-const BUDDY_BASE = '/api/buddy';
+const STEVE_BASE = import.meta.env.VITE_STEVE_API_URL ?? '/api/steve';
 
-/* ─── Generic Fetch Helper ───────────────────────────── */
+// Warn in dev if the env var is missing so misconfiguration is caught early
+if (import.meta.env.DEV && !import.meta.env.VITE_STEVE_API_URL) {
+  console.warn(
+    '[client.ts] VITE_STEVE_API_URL is not set — falling back to /api/steve proxy. ' +
+    'Set this env var for production deployments.',
+  );
+}
+
+/* --- Typed API Error ------------------------------------------------- */
+
+/** Carries the HTTP status code so callers can branch on specific errors */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+/* --- Generic Fetch Helper ------------------------------------------- */
 
 async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
+  // Only set Content-Type for requests that send a body (POST, PUT, PATCH)
+  // GET/DELETE without body don't need it and it can trigger unnecessary CORS preflights.
+  const computedHeaders: Record<string, string> = {};
+  if (options?.body) {
+    computedHeaders['Content-Type'] = 'application/json';
+    // CSRF mitigation: non-standard header forces a CORS preflight, which blocks
+    // cross-origin form-based CSRF attacks. Browsers include it on same-origin requests.
+    computedHeaders['X-Requested-With'] = 'XMLHttpRequest';
+  }
+
+  // Spread order: computed headers first, then caller-supplied headers.
+  // Caller-supplied headers take precedence (e.g. to override Content-Type).
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
     ...options,
+    headers: { ...computedHeaders, ...options?.headers },
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`API ${res.status}: ${body || res.statusText}`);
+    throw new ApiError(res.status, `API ${res.status}: ${body || res.statusText}`);
   }
   return res.json() as Promise<T>;
 }
 
-/* ─── Sports Steve API ───────────────────────────────── */
+/* --- Sports Steve API ----------------------------------------------- */
 
 export const steve = {
+  /* Trigger endpoints */
+
   /** Trigger the daily bet assessment */
   triggerDailyRun: () =>
     apiFetch<{ status: string }>(`${STEVE_BASE}/daily-run`, { method: 'POST' }),
@@ -31,76 +75,128 @@ export const steve = {
   /** Trigger bet resolution */
   resolveBets: () =>
     apiFetch<{ status: string }>(`${STEVE_BASE}/resolve-bets`, { method: 'POST' }),
-};
 
-/* ─── Bet Buddy API ──────────────────────────────────── */
+  /* Read endpoints */
 
-export const buddy = {
-  /** Health check */
-  health: () => apiFetch<{ status: string; features: string[] }>(`${BUDDY_BASE}/health`),
+  /** Health check - returns scheduler status, active sports, bankroll */
+  health: () =>
+    apiFetch<{
+      status: string;
+      scheduler_running: boolean;
+      active_sports: string[];
+      bankroll: number;
+      timestamp: string;
+    }>(`${STEVE_BASE}/health`),
 
-  /* — Odds Tools — */
-  convertOdds: (odds: number, from: string, to: string) =>
-    apiFetch<{ result: number }>(`${BUDDY_BASE}/tools/odds/convert`, {
+  /** Full bankroll and risk state */
+  getBankroll: () =>
+    apiFetch<{
+      bankroll: number;
+      daily_pnl: number;
+      win_rate: number;
+      total_bets: number;
+      avg_odds: number;
+      roi: number;
+      kelly_fraction: number;
+      max_daily_stake: number;
+      stop_loss_hit: boolean;
+      exposure: {
+        total_open_stake: number;
+        open_bet_count: number;
+        by_broker: Record<string, number>;
+        by_sport: Record<string, number>;
+        exposure_pct: number;
+      };
+    }>(`${STEVE_BASE}/bankroll`),
+
+  /** Full bet history */
+  getBets: () =>
+    apiFetch<{
+      bets: Array<{
+        id: string;
+        bet_id: string;
+        broker: string;
+        sport: string;
+        legs: Array<{ selection?: string; odds?: number; status?: string; [key: string]: unknown }>;
+        stake: number;
+        odds: number;
+        expected_value: number;
+        status: string;
+        result: string | null;
+        placed_at: string;
+        settled_at: string | null;
+      }>;
+      count: number;
+    }>(`${STEVE_BASE}/bets`),
+
+  /** Pending bets only */
+  getPendingBets: () =>
+    apiFetch<{
+      bets: Array<{
+        id: string;
+        bet_id: string;
+        broker: string;
+        sport: string;
+        legs?: Array<{ selection?: string; odds?: number; status?: string; [key: string]: unknown }>;
+        stake: number;
+        odds: number;
+        placed_at: string;
+      }>;
+      count: number;
+    }>(`${STEVE_BASE}/bets/pending`),
+
+  /** Current risk exposure */
+  getExposure: () =>
+    apiFetch<{
+      total_open_stake: number;
+      open_bet_count: number;
+      by_broker: Record<string, number>;
+      by_sport: Record<string, number>;
+      exposure_pct: number;
+    }>(`${STEVE_BASE}/exposure`),
+
+  /** Sportsbook account balances and health */
+  getAccounts: () =>
+    apiFetch<{
+      accounts: Array<{
+        name: string;
+        account_id: string;
+        balance: number;
+        total_bet_winnings: number;
+        total_bet_losses: number;
+        net_betting_pnl: number;
+        is_limited: boolean;
+        is_gubbed: boolean;
+        transaction_count: number;
+      }>;
+      total_balance: number;
+      health_flags: unknown[];
+    }>(`${STEVE_BASE}/accounts`),
+
+  /** Budget usage for current period */
+  getBudget: () =>
+    apiFetch<{
+      budgets: Record<string, {
+        limit: number;
+        spent: number;
+        remaining: number;
+        utilisation_pct: number;
+        period_start: string;
+        period_end: string;
+      }>;
+      has_budgets: boolean;
+    }>(`${STEVE_BASE}/budget`),
+
+  /** Update runtime settings (budget limits, kelly fraction, etc.) */
+  updateSettings: (settings: {
+    daily_limit?: number;
+    weekly_limit?: number;
+    monthly_limit?: number;
+    kelly_fraction?: number;
+    max_daily_stake?: number;
+  }) =>
+    apiFetch<{ status: string; applied: string[] }>(`${STEVE_BASE}/settings`, {
       method: 'POST',
-      body: JSON.stringify({ odds, from, to }),
-    }),
-
-  impliedProbability: (odds: number, format: string) =>
-    apiFetch<{ result: number }>(`${BUDDY_BASE}/tools/odds/implied-probability`, {
-      method: 'POST',
-      body: JSON.stringify({ odds, format }),
-    }),
-
-  calculateReturn: (odds: number, stake: number, format: string) =>
-    apiFetch<{ result: number; profit: number }>(`${BUDDY_BASE}/tools/odds/calculate-return`, {
-      method: 'POST',
-      body: JSON.stringify({ odds, stake, format }),
-    }),
-
-  /* — Statistics Tools — */
-  kellyStake: (probability: number, odds: number, bankroll: number, fraction?: number) =>
-    apiFetch<{ result: number; details: Record<string, number> }>(`${BUDDY_BASE}/tools/statistics/kelly`, {
-      method: 'POST',
-      body: JSON.stringify({ probability, odds, bankroll, fraction }),
-    }),
-
-  expectedValue: (probability: number, odds: number, stake: number) =>
-    apiFetch<{ result: number }>(`${BUDDY_BASE}/tools/statistics/expected-value`, {
-      method: 'POST',
-      body: JSON.stringify({ probability, odds, stake }),
-    }),
-
-  /* — Bankroll Tools — */
-  suggestedStake: (bankroll: number, edge: number, odds: number) =>
-    apiFetch<{ result: number }>(`${BUDDY_BASE}/tools/bankroll/suggested-stake`, {
-      method: 'POST',
-      body: JSON.stringify({ bankroll, edge, odds }),
-    }),
-
-  responsibleGambling: (bankroll: number, sessionLength: number) =>
-    apiFetch<{ limits: Record<string, number>; tips: string[] }>(
-      `${BUDDY_BASE}/tools/bankroll/responsible-gambling`,
-      { method: 'POST', body: JSON.stringify({ bankroll, sessionLength }) },
-    ),
-
-  /* — Export — */
-  exportBets: (bets: unknown[], format: string) =>
-    apiFetch<{ result: string }>(`${BUDDY_BASE}/tools/export`, {
-      method: 'POST',
-      body: JSON.stringify({ bets, format }),
-    }),
-
-  /* — Games — */
-  listGames: () =>
-    apiFetch<{ games: unknown[] }>(`${BUDDY_BASE}/games`),
-
-  getBalance: () =>
-    apiFetch<{ balance: number }>(`${BUDDY_BASE}/games/simvc/balance`),
-
-  placeBet: (gameId: string, amount: number, selection: string) =>
-    apiFetch<{ result: unknown }>(`${BUDDY_BASE}/games/bet`, {
-      method: 'POST',
-      body: JSON.stringify({ gameId, amount, selection }),
+      body: JSON.stringify(settings),
     }),
 };
