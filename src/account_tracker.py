@@ -9,9 +9,11 @@ Features
 * Record deposits, withdrawals, and bet outcomes per account.
 * Monitor account health (flag accounts at risk of limits/bans).
 * Aggregate total funds across all sportsbooks.
+* SQLite-backed persistence — survives restarts.
 """
 
 import logging
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -190,9 +192,61 @@ class AccountTracker:
     [{'name': 'DraftKings', ...}, {'name': 'PrizePicks', ...}]
     """
 
-    def __init__(self):
+    def __init__(self, db_conn: sqlite3.Connection | None = None):
         self._accounts: dict[str, SportsbookAccount] = {}
-        logger.info("AccountTracker initialized.")
+        self._db = db_conn
+
+        # Restore from database if available
+        if self._db is not None:
+            self._load_from_db()
+
+        logger.info("AccountTracker initialized (loaded %d accounts).", len(self._accounts))
+
+    # ------------------------------------------------------------------
+    # SQLite persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_from_db(self) -> None:
+        """Restore accounts and their transactions from SQLite."""
+        from src.database import load_accounts, load_transactions
+
+        for row in load_accounts(self._db):
+            account = SportsbookAccount(
+                name=row["name"],
+                account_id=row["account_id"],
+                balance=row["balance"],
+                max_bet=row["max_bet"],
+                is_limited=bool(row["is_limited"]),
+                is_gubbed=bool(row["is_gubbed"]),
+                notes=row["notes"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            # Restore transactions
+            for txn_row in load_transactions(self._db, account.account_id):
+                txn = AccountTransaction(
+                    id=txn_row["id"],
+                    account_id=txn_row["account_id"],
+                    txn_type=txn_row["txn_type"],
+                    amount=txn_row["amount"],
+                    description=txn_row["description"],
+                    timestamp=datetime.fromisoformat(txn_row["timestamp"]),
+                )
+                account.transactions.append(txn)
+            self._accounts[account.account_id] = account
+
+    def _persist_account(self, account: SportsbookAccount) -> None:
+        """Write account state to SQLite."""
+        if self._db is None:
+            return
+        from src.database import save_account
+        save_account(self._db, account)
+
+    def _persist_transaction(self, txn: AccountTransaction) -> None:
+        """Write a transaction to SQLite."""
+        if self._db is None:
+            return
+        from src.database import save_transaction
+        save_transaction(self._db, txn)
 
     # ------------------------------------------------------------------
     # Account management
@@ -231,6 +285,7 @@ class AccountTracker:
         if account_id:
             account.account_id = account_id
         self._accounts[account.account_id] = account
+        self._persist_account(account)
         logger.info("Added account: %s (id=%s) balance=%.2f", name, account.account_id, initial_balance)
         return account
 
@@ -254,6 +309,10 @@ class AccountTracker:
         """Remove an account. Returns True if found and removed."""
         if account_id in self._accounts:
             del self._accounts[account_id]
+            if self._db is not None:
+                self._db.execute("DELETE FROM account_transactions WHERE account_id = ?", (account_id,))
+                self._db.execute("DELETE FROM sportsbook_accounts WHERE account_id = ?", (account_id,))
+                self._db.commit()
             logger.info("Removed account id=%s", account_id)
             return True
         return False
@@ -278,7 +337,10 @@ class AccountTracker:
         if account is None:
             logger.warning("apply_bet_result: unknown account_id=%s", account_id)
             return None
-        return account.apply_bet_result(stake, odds, result)
+        txn = account.apply_bet_result(stake, odds, result)
+        self._persist_account(account)
+        self._persist_transaction(txn)
+        return txn
 
     # ------------------------------------------------------------------
     # Reporting

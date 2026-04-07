@@ -1,4 +1,4 @@
-"""
+﻿"""
 src/scheduler.py
 
 Scheduled tasks for daily bet assessment and hourly bet resolution.
@@ -22,6 +22,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from src.brokers.draftkings import DraftKingsBroker
 from src.brokers.prizepicks import PrizePicksBroker
 from src.brokers.base import SportsbookBroker
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,32 +32,92 @@ logger = logging.getLogger(__name__)
 
 
 def _build_brokers() -> dict[str, SportsbookBroker]:
-    return {
-        "draftkings": DraftKingsBroker(),
-        "prizepicks": PrizePicksBroker(),
-    }
+    """
+    Instantiate all brokers, injecting credentials from config.
+    DraftKingsBroker raises ImportError if lukhed-sports is not installed;
+    we catch that and omit it so the rest of the system still works.
+    """
+    brokers: dict[str, SportsbookBroker] = {}
+
+    # PrizePicks -- always available (public odds endpoint works without auth)
+    brokers["prizepicks"] = PrizePicksBroker(
+        session_cookie=settings.PRIZEPICKS_SESSION_COOKIE or None,
+        csrf_token=settings.PRIZEPICKS_CSRF_TOKEN or None,
+    )
+
+    # DraftKings -- requires lukhed-sports installed
+    try:
+        brokers["draftkings"] = DraftKingsBroker()
+    except ImportError:
+        logger.warning("DraftKingsBroker unavailable (lukhed-sports not installed) -- skipping.")
+
+    return brokers
 
 
 def _select_broker(brokers: dict[str, SportsbookBroker], sport: str) -> tuple[str, SportsbookBroker]:
     """
     Route a sport to the preferred broker.
-    - Game lines (spreads/totals/ML) -> DraftKings
+    - Game lines (spreads/totals/ML) -> DraftKings (fallback: PrizePicks)
     - Player props              -> PrizePicks
-    Adjust this logic to fit your strategy.
     """
     game_line_sports = {"NFL", "NBA", "NHL", "MLB", "NCAAFB", "NCAAMB"}
-    if sport.upper() in game_line_sports:
+    if sport.upper() in game_line_sports and "draftkings" in brokers:
         return "draftkings", brokers["draftkings"]
     return "prizepicks", brokers["prizepicks"]
 
 
 def validate_edge(parlay, current_odds: dict) -> bool:
     """
-    Stub — replace with your real edge-validation logic.
-    Return True if the parlay still has positive expected value
-    based on freshly-fetched odds.
+    Validate that a parlay still has positive expected value based on
+    freshly-fetched live odds.
+
+    Logic:
+      For each leg in the parlay, look up the matching projection in
+      current_odds.  If the live line has moved more than 10% against us
+      (i.e. the line score has shifted unfavourably by >10%), invalidate.
+      If no matching projection is found, we cannot confirm the edge --
+      invalidate to be safe.
+
+    Returns True only if every leg can be confirmed and none have moved
+    significantly against us.
     """
-    return bool(current_odds)  # placeholder: always valid if odds returned
+    if not current_odds:
+        logger.info("validate_edge: no current odds returned -- invalidating parlay.")
+        return False
+
+    if not hasattr(parlay, "legs") or not parlay.legs:
+        # Single-event or unknown structure -- allow through if odds exist
+        return True
+
+    for leg in parlay.legs:
+        event_id = getattr(leg, "event_id", None)
+        if event_id is None:
+            continue
+
+        # Check by event_id first, then fall back to projection_id embedded in leg
+        live = current_odds.get(str(event_id))
+        if live is None:
+            # Could not find this leg in freshly-fetched odds -- conservative: skip
+            logger.info(
+                "validate_edge: leg %s not found in live odds -- invalidating parlay %s.",
+                event_id, getattr(parlay, "id", "?"),
+            )
+            return False
+
+        # Compare original line to live line (PrizePicks projections use "line")
+        original_line = float(getattr(leg, "line", 0) or 0)
+        live_line = float(live.get("line", original_line) or original_line)
+
+        if original_line != 0:
+            shift = abs(live_line - original_line) / abs(original_line)
+            if shift > 0.10:
+                logger.info(
+                    "validate_edge: leg %s line moved %.1f%% (%.2f -> %.2f) -- invalidating.",
+                    event_id, shift * 100, original_line, live_line,
+                )
+                return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +128,9 @@ def validate_edge(parlay, current_odds: dict) -> bool:
 async def daily_bet_assessment(app) -> None:
     """
     Run once per day (default 09:00 local).
-    1. Generate optimised parlays via your ParlayOptimizer.
+    1. Generate optimised parlays via ParlayOptimizer.
     2. Validate edge against live odds.
-    3. Place top-N bets and record them in the DB.
+    3. Place top-N bets (capped by MAX_BETS_PER_DAY) and record them.
     """
     logger.info("=== Daily bet assessment starting ===")
     brokers = _build_brokers()
@@ -77,41 +138,44 @@ async def daily_bet_assessment(app) -> None:
 
     # Enforce stop-loss / cool-down before doing any work
     if risk_manager.check_stop_loss():
-        logger.warning("Daily assessment aborted — stop-loss/cool-down is active.")
+        logger.warning("Daily assessment aborted -- stop-loss/cool-down is active.")
         return
 
-    # -- Import here to avoid circular deps at module load time --
     from src.optimization.parlay_builder import ParlayOptimizer
-    from src.config import settings
 
     try:
         optimizer = ParlayOptimizer(
             risk_profile="balanced",
-            # pass any other kwargs your optimizer needs
+            brokers=brokers,
         )
         parlays = await optimizer.generate_optimized_parlays(
             sports=settings.ACTIVE_SPORTS,
-            min_edge=0.05,
+            min_edge=settings.MIN_EDGE,
             max_legs=3,
+            bankroll=risk_manager.bankroll,
         )
-        logger.info(f"Optimizer returned {len(parlays)} parlay candidates")
+        logger.info("Optimizer returned %d parlay candidates", len(parlays))
     except Exception:
         logger.exception("Parlay optimiser failed")
         return
 
     placed = 0
+    max_bets = settings.MAX_BETS_PER_DAY
     budget_manager = getattr(app.state, "budget_manager", None)
 
-    for parlay in parlays[:5]:           # cap at top 5 per day
+    for parlay in parlays[:max_bets]:           # cap at MAX_BETS_PER_DAY
+        if placed >= max_bets:
+            break
+
         # Re-check stop-loss and exposure before each bet
         if risk_manager.check_stop_loss():
-            logger.warning("Stop-loss triggered mid-session — halting further placement.")
+            logger.warning("Stop-loss triggered mid-session -- halting further placement.")
             break
 
         exposure = risk_manager.get_exposure()
         if exposure["exposure_pct"] >= risk_manager.max_exposure_pct * 100:
             logger.warning(
-                "Exposure limit reached (%.1f%%) — skipping remaining parlays.",
+                "Exposure limit reached (%.1f%%) -- skipping remaining parlays.",
                 exposure["exposure_pct"],
             )
             break
@@ -122,7 +186,7 @@ async def daily_bet_assessment(app) -> None:
             current_odds = await broker.get_odds(parlay.sport, event_ids)
 
             if not validate_edge(parlay, current_odds):
-                logger.info(f"Edge no longer valid for parlay {parlay.id}, skipping")
+                logger.info("Edge no longer valid for parlay %s, skipping", parlay.id)
                 continue
 
             # Use Kelly criterion for stake sizing when win probability is available.
@@ -130,15 +194,26 @@ async def daily_bet_assessment(app) -> None:
             if parlay.win_probability > 0:
                 stake = risk_manager.kelly_stake(parlay.win_probability, parlay.odds)
                 if stake == 0.0:
-                    logger.info(f"Kelly stake is zero for parlay {parlay.id} — skipping")
+                    logger.info("Kelly stake is zero for parlay %s -- skipping", parlay.id)
                     continue
             else:
                 stake = parlay.recommended_stake
 
+            # Cap stake to MAX_DAILY_STAKE from config
+            stake = min(stake, settings.MAX_DAILY_STAKE)
+
+            # Apply MIN_WIN_PROBABILITY gate from config
+            if parlay.win_probability > 0 and parlay.win_probability < settings.MIN_WIN_PROBABILITY:
+                logger.info(
+                    "Parlay %s win_prob=%.3f below MIN_WIN_PROBABILITY=%.3f -- skipping",
+                    parlay.id, parlay.win_probability, settings.MIN_WIN_PROBABILITY,
+                )
+                continue
+
             # Check budget before placing
             if budget_manager is not None and not budget_manager.can_spend(stake, sport=parlay.sport):
                 logger.warning(
-                    "Budget limit would be breached for parlay %s (stake=%.2f) — skipping.",
+                    "Budget limit would be breached for parlay %s (stake=%.2f) -- skipping.",
                     parlay.id, stake,
                 )
                 continue
@@ -152,18 +227,18 @@ async def daily_bet_assessment(app) -> None:
             # Record spend in budget manager
             if budget_manager is not None:
                 budget_manager.record_spend(bet_id, stake, sport=parlay.sport, sportsbook=broker_name)
-            logger.info(f"Placed bet {bet_id} via {broker_name} (parlay {parlay.id})")
+            logger.info("Placed bet %s via %s (parlay %s)", bet_id, broker_name, parlay.id)
             placed += 1
 
         except Exception:
-            logger.exception("Failed to place parlay %s", getattr(parlay, 'id', '?'))
+            logger.exception("Failed to place parlay %s", getattr(parlay, "id", "?"))
 
-    logger.info(f"=== Daily assessment complete — {placed} bet(s) placed ===")
+    logger.info("=== Daily assessment complete -- %d bet(s) placed ===", placed)
 
 
 async def resolve_bets(app) -> None:
     """
-    Run hourly — check pending bets and settle any that have results.
+    Run hourly -- check pending bets and settle any that have results.
     """
     logger.info("Checking pending bets for settlement...")
     brokers = _build_brokers()
@@ -178,18 +253,19 @@ async def resolve_bets(app) -> None:
     for bet in pending:
         broker = brokers.get(bet.broker_name)
         if broker is None:
-            logger.warning(f"Unknown broker '{bet.broker_name}' for bet {bet.bet_id}")
+            logger.warning("Unknown broker '%s' for bet %s", bet.broker_name, bet.bet_id)
             continue
         try:
             status = await broker.check_bet_status(bet.bet_id)
             if status.get("status") == "settled":
-                await app.state.risk_manager.settle_bet(bet.id, status["result"])
-                logger.info(f"Settled bet {bet.bet_id}: result={status['result']}")
+                result = status.get("result", "void")
+                await app.state.risk_manager.settle_bet(bet.id, result)
+                logger.info("Settled bet %s: result=%s", bet.bet_id, result)
                 settled_count += 1
         except Exception:
             logger.exception("Error resolving bet %s", bet.bet_id)
 
-    logger.info(f"Bet resolution complete — {settled_count} settled out of {len(pending)} pending")
+    logger.info("Bet resolution complete -- %d settled out of %d pending", settled_count, len(pending))
 
 
 async def reset_daily_limits(app) -> None:

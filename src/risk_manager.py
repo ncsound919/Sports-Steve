@@ -9,7 +9,9 @@ Implements skills from the Big skills document:
 """
 
 import asyncio
+import json
 import logging
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,7 +47,7 @@ class RiskManager:
     * Kelly criterion stake sizing (bankroll management)
     * Daily stop-loss enforcement and cool-down triggers
     * Cross-broker exposure monitoring
-    * In-memory audit trail (replace with DB persistence for production)
+    * SQLite-backed audit trail for durable persistence
     """
 
     def __init__(
@@ -54,11 +56,13 @@ class RiskManager:
         max_daily_loss_pct: float = 0.10,
         max_exposure_pct: float = 0.20,
         kelly_fraction: float = 0.25,   # fractional Kelly for safety
+        db_conn: sqlite3.Connection | None = None,
     ):
         self.bankroll = bankroll
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_exposure_pct = max_exposure_pct
         self.kelly_fraction = kelly_fraction
+        self._db = db_conn
 
         self._bets: dict[str, Bet] = {}          # id -> Bet
         self._daily_pnl: float = 0.0
@@ -67,13 +71,71 @@ class RiskManager:
         # (e.g., BackgroundTasks + APScheduler jobs) run in the same event loop.
         self._lock = asyncio.Lock()
 
+        # Restore state from database if available
+        if self._db is not None:
+            self._load_from_db()
+
         logger.info(
             "RiskManager initialized | bankroll=%.2f | "
-            "max_daily_loss_pct=%.0f%% | kelly_fraction=%.2f",
-            bankroll,
+            "max_daily_loss_pct=%.0f%% | kelly_fraction=%.2f | bets_loaded=%d",
+            self.bankroll,
             max_daily_loss_pct * 100,
             kelly_fraction,
+            len(self._bets),
         )
+
+    # ------------------------------------------------------------------
+    # SQLite persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_from_db(self) -> None:
+        """Restore bets and runtime state from SQLite on startup."""
+        from src.database import load_all_bets, load_state
+
+        # Restore bets
+        for row in load_all_bets(self._db):
+            bet = Bet(
+                id=row["id"],
+                bet_id=row["bet_id"],
+                broker_name=row["broker_name"],
+                sport=row["sport"],
+                legs=json.loads(row["legs"]),
+                stake=row["stake"],
+                odds=row["odds"],
+                expected_value=row["expected_value"],
+                status=row["status"],
+                result=row["result"],
+                placed_at=datetime.fromisoformat(row["placed_at"]),
+                settled_at=datetime.fromisoformat(row["settled_at"]) if row["settled_at"] else None,
+            )
+            self._bets[bet.id] = bet
+
+        # Restore runtime scalars
+        saved_bankroll = load_state(self._db, "bankroll")
+        if saved_bankroll:
+            self.bankroll = float(saved_bankroll)
+        saved_pnl = load_state(self._db, "daily_pnl")
+        if saved_pnl:
+            self._daily_pnl = float(saved_pnl)
+        saved_cool = load_state(self._db, "is_cooling_down")
+        if saved_cool:
+            self._is_cooling_down = saved_cool == "1"
+
+    def _persist_bet(self, bet: Bet) -> None:
+        """Write a single bet to SQLite."""
+        if self._db is None:
+            return
+        from src.database import save_bet
+        save_bet(self._db, bet)
+
+    def _persist_state(self) -> None:
+        """Flush runtime scalars (bankroll, pnl, cooldown) to SQLite."""
+        if self._db is None:
+            return
+        from src.database import save_state
+        save_state(self._db, "bankroll", str(self.bankroll))
+        save_state(self._db, "daily_pnl", str(self._daily_pnl))
+        save_state(self._db, "is_cooling_down", "1" if self._is_cooling_down else "0")
 
     # ------------------------------------------------------------------
     # Read-only properties for observability / testing
@@ -154,6 +216,7 @@ class RiskManager:
         loss_limit = self.bankroll * self.max_daily_loss_pct
         if self._daily_pnl <= -loss_limit:
             self._is_cooling_down = True
+            self._persist_state()
             logger.warning(
                 "Stop-loss triggered! Daily P&L=%.2f limit=%.2f — cool-down activated.",
                 self._daily_pnl,
@@ -167,6 +230,7 @@ class RiskManager:
         """Call at the start of each new trading day to reset P&L and cool-down."""
         self._daily_pnl = 0.0
         self._is_cooling_down = False
+        self._persist_state()
         logger.info("Daily limits reset — cool-down cleared, P&L zeroed.")
 
     # ------------------------------------------------------------------
@@ -233,6 +297,7 @@ class RiskManager:
         )
         async with self._lock:
             self._bets[record_id] = bet
+        self._persist_bet(bet)
         logger.info(
             "Bet recorded | id=%s bet_id=%s broker=%s sport=%s stake=%.2f",
             record_id,
@@ -282,5 +347,8 @@ class RiskManager:
                 self.check_stop_loss()
             else:
                 logger.info("Bet %s result=%s — no P&L change.", bet.bet_id, result)
+
+            self._persist_bet(bet)
+            self._persist_state()
 
         return bet

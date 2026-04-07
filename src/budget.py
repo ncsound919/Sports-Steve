@@ -8,6 +8,7 @@ Implements:
 """
 
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone, timedelta
 from enum import Enum
@@ -111,10 +112,36 @@ class BudgetManager:
     50.0
     """
 
-    def __init__(self):
+    def __init__(self, db_conn: sqlite3.Connection | None = None):
         self._budgets: dict[BudgetPeriod, Budget] = {}
         self._entries: list[BudgetEntry] = []
-        logger.info("BudgetManager initialized.")
+        self._db = db_conn
+
+        # Restore entries from database if available
+        if self._db is not None:
+            self._load_from_db()
+
+        logger.info("BudgetManager initialized (loaded %d entries).", len(self._entries))
+
+    def _load_from_db(self) -> None:
+        """Restore budget entries from SQLite."""
+        from src.database import load_budget_entries
+        for row in load_budget_entries(self._db):
+            entry = BudgetEntry(
+                bet_id=row["bet_id"],
+                amount=row["amount"],
+                sport=row["sport"],
+                sportsbook=row["sportsbook"],
+                timestamp=datetime.fromisoformat(row["timestamp"]),
+            )
+            self._entries.append(entry)
+
+    def _persist_entry(self, entry: BudgetEntry) -> None:
+        """Write a single budget entry to SQLite."""
+        if self._db is None:
+            return
+        from src.database import save_budget_entry
+        save_budget_entry(self._db, entry)
 
     # ------------------------------------------------------------------
     # Budget configuration
@@ -192,6 +219,7 @@ class BudgetManager:
         if timestamp is not None:
             entry.timestamp = timestamp
         self._entries.append(entry)
+        self._persist_entry(entry)
         logger.info(
             "Budget spend recorded: bet_id=%s amount=%.2f sport=%s sportsbook=%s",
             bet_id, amount, sport, sportsbook,

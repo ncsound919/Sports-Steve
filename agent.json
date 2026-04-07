@@ -1,0 +1,59 @@
+{
+  "id": "sports-steve",
+  "slug": "sports-steve",
+  "name": "Sports Steve",
+  "codename": "Steve",
+  "version": "1.0.0",
+  "tier": "specialist",
+  "role": "Sports Analyst",
+  "tagline": "AI sports analysis & betting intelligence",
+  "bio": "Sports Steve is an AI-powered sports analysis engine with built-in risk management. Uses Kelly criterion stake sizing, Monte Carlo simulation, and multi-sportsbook edge detection to generate optimized parlays. Includes Bet Buddy for slip scanning and bankroll tracking.",
+  "personality": "strategic",
+  "voice": "confident, data-driven, direct",
+  "theme": {
+    "accentColor": "#f59e0b",
+    "cardStyle": "neon",
+    "portraitFrame": "shield",
+    "badgeColor": "#f59e0b"
+  },
+  "specialties": ["sports-analytics", "risk-management", "odds-calculation", "bankroll-tracking"],
+  "capabilities": [
+    { "id": "sports-betting", "label": "Sports Betting", "description": "AI-powered sports betting analysis and picks" },
+    { "id": "risk-analysis", "label": "Risk Analysis", "description": "Kelly criterion and Monte Carlo risk assessment" },
+    { "id": "odds-comparison", "label": "Odds Comparison", "description": "Compare odds across multiple sportsbooks" },
+    { "id": "parlay-optimization", "label": "Parlay Optimizer", "description": "Generate optimized parlay combinations" },
+    { "id": "bankroll-tracking", "label": "Bankroll Tracking", "description": "Track bankroll, P&L, and budget limits" },
+    { "id": "bet-resolution", "label": "Bet Resolution", "description": "Automated bet grading and result tracking" }
+  ],
+  "stats": [
+    { "label": "Analysis", "value": 92, "color": "#f59e0b" },
+    { "label": "Risk Mgmt", "value": 95, "color": "#f59e0b" },
+    { "label": "Speed", "value": 85, "color": "#f59e0b" },
+    { "label": "Accuracy", "value": 88, "color": "#f59e0b" }
+  ],
+  "tags": ["sports", "betting", "analytics", "risk", "parlays"],
+  "runtime": {
+    "type": "http",
+    "endpoint": "http://localhost:8010",
+    "healthPath": "/api/v1/health",
+    "timeoutMs": 30000
+  },
+  "permissions": {
+    "canReadFiles": true,
+    "canWriteFiles": true,
+    "canRunCommands": false,
+    "canAccessInternet": true,
+    "canAccessDatabase": true,
+    "canSendEmail": false
+  },
+  "modelPreferences": {
+    "primary": "gpt-4o-mini"
+  },
+  "workflows": [],
+  "memoryEnabled": true,
+  "persistentMemory": true,
+  "status": "offline",
+  "installedAt": "2025-01-01T00:00:00.000Z",
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "sourceType": "folder"
+}

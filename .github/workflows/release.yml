@@ -1,0 +1,183 @@
+name: Release Windows EXE (Paid — Supabase Storage)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+
+jobs:
+  build-and-upload:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout Sports Steve + Bet Buddy
+        uses: actions/checkout@v4
+
+      # ── Frontend: Sports Steve ───────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Sports Steve frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+        env:
+          VITE_API_URL: http://localhost:8000
+
+      # ── Python backend ───────────────────────────────────────────────────────
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      # Launcher script: starts the FastAPI server and serves the built frontend
+      - name: Write launcher script
+        shell: pwsh
+        run: |
+          $launcher = @'
+          """
+          launcher.py — Sports Steve + Bet Buddy EXE entry point.
+          Starts the FastAPI backend and opens the browser UI automatically.
+          """
+          import os
+          import sys
+          import threading
+          import webbrowser
+          import time
+
+          # When running as a PyInstaller bundle, sys._MEIPASS holds unpacked files
+          _base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+          os.chdir(_base)
+
+          # Set a default port
+          PORT = int(os.environ.get("PORT", "8000"))
+
+          def open_browser():
+              time.sleep(2.5)
+              webbrowser.open(f"http://localhost:{PORT}")
+
+          def main():
+              threading.Thread(target=open_browser, daemon=True).start()
+              import uvicorn
+              uvicorn.run("src.main:app", host="0.0.0.0", port=PORT, log_level="info")
+
+          if __name__ == "__main__":
+              main()
+          '@
+          Set-Content -Path launcher.py -Value $launcher
+
+      - name: Build EXE with PyInstaller
+        run: |
+          pyinstaller launcher.py `
+            --onefile `
+            --name SportsSteveAndBetBuddy `
+            --add-data "frontend/dist;frontend/dist" `
+            --add-data "Bet-Buddy--main/frontend;Bet-Buddy--main/frontend" `
+            --hidden-import src `
+            --hidden-import src.main `
+            --hidden-import src.config `
+            --hidden-import src.database `
+            --hidden-import src.risk_manager `
+            --hidden-import src.scheduler `
+            --hidden-import src.account_tracker `
+            --hidden-import src.budget `
+            --hidden-import fastapi `
+            --hidden-import uvicorn `
+            --hidden-import uvicorn.logging `
+            --hidden-import uvicorn.loops `
+            --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols `
+            --hidden-import uvicorn.protocols.http `
+            --hidden-import uvicorn.protocols.http.auto `
+            --hidden-import uvicorn.protocols.websockets `
+            --hidden-import uvicorn.protocols.websockets.auto `
+            --hidden-import uvicorn.lifespan `
+            --hidden-import uvicorn.lifespan.on `
+            --hidden-import apscheduler `
+            --hidden-import apscheduler.schedulers.asyncio `
+            --distpath release `
+            --clean `
+            --noconfirm
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          $exe = "release\SportsSteveAndBetBuddy.exe"
+          $dst = "release\SportsSteveAndBetBuddy-Windows-x64.exe"
+          Rename-Item $exe $dst
+          $size = ((Get-Item $dst).Length / 1MB).ToString('F1')
+          Write-Output "Artifact ready: $dst ($size MB)"
+
+      # ── Upload to Supabase Storage ───────────────────────────────────────────
+      # Uses the Supabase Management API directly (no CLI needed)
+      - name: Determine release tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            echo "tag=${{ github.event.inputs.tag }}" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "tag=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Upload EXE to Supabase Storage
+        shell: pwsh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $filePath  = "release\SportsSteveAndBetBuddy-Windows-x64.exe"
+          $objectKey = "SportsSteveAndBetBuddy-Windows-x64.exe"
+          $bucket    = "paid-releases"
+          $url       = "$env:SUPABASE_URL/storage/v1/object/$bucket/$objectKey"
+
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $filePath))
+
+          $response = Invoke-RestMethod `
+            -Uri $url `
+            -Method Put `
+            -Headers @{
+              Authorization = "Bearer $env:SUPABASE_SERVICE_ROLE_KEY"
+              "Content-Type" = "application/octet-stream"
+              "x-upsert"     = "true"
+            } `
+            -Body $bytes
+
+          Write-Output "Upload complete: $($response | ConvertTo-Json)"
+
+      # ── (Optional) Also create a GitHub Release for tagging purposes ─────────
+      - name: Create GitHub Release (no binary — binary is in Supabase)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Sports Steve + Bet Buddy ${{ steps.tag.outputs.tag }} (Paid)
+          body: |
+            ## Sports Steve + Bet Buddy ${{ steps.tag.outputs.tag }}
+
+            This is a **paid product**. Download is available at
+            [overlay365.org/downloads](https://overlay365.org/downloads) after purchase.
+
+            The Windows EXE has been uploaded to Supabase Storage and is accessible
+            via time-limited signed URL after Stripe checkout.
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

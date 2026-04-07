@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
+import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import Dashboard from './pages/Dashboard';
 import OddsCalculator from './pages/OddsCalculator';
 import BankrollManager from './pages/BankrollManager';
@@ -10,7 +11,7 @@ import Settings from './pages/Settings';
 export default function App() {
   return (
     <Routes>
-      <Route element={<AppLayout />}>
+      <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/odds" element={<OddsCalculator />} />
         <Route path="/bankroll" element={<BankrollManager />} />

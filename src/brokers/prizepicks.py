@@ -191,10 +191,18 @@ class PrizePicksBroker(SportsbookBroker):
         """
         if stake <= 0:
             raise ValueError(f"Stake must be positive, got {stake}")
-        if stake < 5.0:
-            raise ValueError(f"Minimum PrizePicks stake is $5, got ${stake:.2f}")
         if stake > 500.0:
             raise ValueError(f"Maximum stake exceeded: ${stake:.2f}")
+
+        # PrizePicks requires a $5 minimum entry. If the Kelly-sized stake
+        # is below $5, skip the bet rather than crash the pipeline.
+        if stake < 5.0:
+            mock_id = f"PP_SKIP_MIN_{int(time.time())}"
+            logger.warning(
+                "Stake $%.2f below PrizePicks $5 minimum -- skipping (id=%s)",
+                stake, mock_id,
+            )
+            return mock_id
 
         if not self.session_cookie:
             mock_id = f"PP_MOCK_{int(time.time())}"
@@ -255,7 +263,7 @@ class PrizePicksBroker(SportsbookBroker):
         For simulated bets (PP_MOCK_*), always returns pending.
         For real entry IDs, polls GET /entries/{entry_id}.
         """
-        if bet_id.startswith("PP_MOCK_"):
+        if bet_id.startswith("PP_MOCK_") or bet_id.startswith("PP_SKIP_MIN_"):
             return {"bet_id": bet_id, "status": "pending", "result": None, "source": "simulated"}
 
         if not self.session_cookie:

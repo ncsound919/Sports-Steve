@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src.config import settings
+from src.database import get_connection, init_db
 from src.risk_manager import RiskManager
 from src.scheduler import create_scheduler
 from src.account_tracker import AccountTracker
@@ -43,27 +44,36 @@ _daily_run_lock = asyncio.Lock()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ---- startup ----
+
+    # Initialise SQLite database
+    db_conn = get_connection()
+    init_db(db_conn)
+    app.state.db_conn = db_conn
+
     app.state.risk_manager = RiskManager(
         bankroll=settings.RISK_BANKROLL,
         max_daily_loss_pct=settings.RISK_MAX_DAILY_LOSS_PCT,
         max_exposure_pct=settings.RISK_MAX_EXPOSURE_PCT,
         kelly_fraction=settings.RISK_KELLY_FRACTION,
+        db_conn=db_conn,
     )
 
     # Multi-sportsbook account tracker -- register known accounts at startup
-    tracker = AccountTracker()
-    if settings.RISK_BANKROLL > 0:
+    tracker = AccountTracker(db_conn=db_conn)
+    # Only add default accounts if they don't already exist from DB
+    if tracker.get_account("prizepicks-main") is None and settings.RISK_BANKROLL > 0:
         tracker.add_account(
             "PrizePicks",
             initial_balance=settings.RISK_BANKROLL,
             account_id="prizepicks-main",
         )
-    # DraftKings balance is unknown at startup -- register with 0 and update manually
-    tracker.add_account("DraftKings", initial_balance=0.0, account_id="draftkings-main")
+    if tracker.get_account("draftkings-main") is None:
+        # DraftKings balance is unknown at startup -- register with 0 and update manually
+        tracker.add_account("DraftKings", initial_balance=0.0, account_id="draftkings-main")
     app.state.account_tracker = tracker
 
     # Budget manager -- wire up any non-zero limits from config
-    budget_manager = BudgetManager()
+    budget_manager = BudgetManager(db_conn=db_conn)
     if settings.BUDGET_DAILY_LIMIT > 0:
         budget_manager.add_budget(BudgetPeriod.DAILY, settings.BUDGET_DAILY_LIMIT)
     if settings.BUDGET_WEEKLY_LIMIT > 0:
@@ -81,6 +91,9 @@ async def lifespan(app: FastAPI):
     # ---- shutdown ----
     scheduler.shutdown(wait=False)
     logger.info("APScheduler stopped")
+    # Flush and close the database connection
+    db_conn.close()
+    logger.info("SQLite connection closed")
 
 
 app = FastAPI(
