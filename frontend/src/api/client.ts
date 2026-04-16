@@ -187,7 +187,7 @@ export const steve = {
       has_budgets: boolean;
     }>(`${STEVE_BASE}/budget`),
 
-  /** Update runtime settings (budget limits, kelly fraction, etc.) */
+/** Update runtime settings (budget limits, kelly fraction, etc.) */
   updateSettings: (settings: {
     daily_limit?: number;
     weekly_limit?: number;
@@ -196,7 +196,26 @@ export const steve = {
     max_daily_stake?: number;
   }) =>
     apiFetch<{ status: string; applied: string[] }>(`${STEVE_BASE}/settings`, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify(settings),
     }),
+
+  /** PrizePicks picks with edge analysis */
+  getPicks: (sport?: string, minEdge: number = 0) =>
+    apiFetch<{
+      picks: Array<{
+        player: string;
+        stat_type: string;
+        pp_line: number;
+        odds: number;
+        pp_projection_id: string;
+        game_id: string;
+        oddsapi_home: string;
+        oddsapi_away: string;
+        oddsapi_line: string;
+        edge: number;
+        sport: string;
+      }>;
+      count: number;
+    }>(`${STEVE_BASE}/prizepicks/picks?sport=${sport || ""}&min_edge=${minEdge}`),
 };

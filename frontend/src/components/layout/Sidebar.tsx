@@ -5,6 +5,13 @@ import { ModeToggle } from '../ui/ModeToggle';
 const NAV_ITEMS = [
   {
     path: '/',
+    label: 'PrizePicks Picks',
+    beginnerLabel: 'Best Bets',
+    icon: '🎯',
+    description: 'PrizePicks props with edge analysis',
+  },
+  {
+    path: '/dashboard',
     label: 'Dashboard',
     beginnerLabel: 'Home',
     icon: '📊',

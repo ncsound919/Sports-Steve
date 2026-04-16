@@ -19,9 +19,7 @@ class Settings:
 
     # Sports to monitor for daily bet assessment
     ACTIVE_SPORTS: list = field(
-        default_factory=lambda: os.getenv(
-            "ACTIVE_SPORTS", "NFL,NBA,NHL,MLB"
-        ).split(",")
+        default_factory=lambda: os.getenv("ACTIVE_SPORTS", "NFL,NBA,NHL,MLB").split(",")
     )
 
     # Maximum daily stake budget (USD)
@@ -41,7 +39,9 @@ class Settings:
 
     # Monte Carlo simulation parameters
     MONTE_CARLO_N_SIMS: int = int(os.getenv("MONTE_CARLO_N_SIMS", "1000"))
-    MONTE_CARLO_MAX_RUIN_PCT: float = float(os.getenv("MONTE_CARLO_MAX_RUIN_PCT", "0.10"))
+    MONTE_CARLO_MAX_RUIN_PCT: float = float(
+        os.getenv("MONTE_CARLO_MAX_RUIN_PCT", "0.10")
+    )
 
     # PrizePicks authentication - cookie-based session (no Bearer token)
     PRIZEPICKS_SESSION_COOKIE: str = os.getenv("PRIZEPICKS_SESSION_COOKIE", "")
@@ -69,6 +69,9 @@ class Settings:
 
     # Logging level
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+    # Uvicorn server port
+    PORT: int = int(os.getenv("PORT", "8000"))
 
 
 settings = Settings()

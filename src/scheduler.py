@@ -1,4 +1,4 @@
-﻿"""
+"""
 src/scheduler.py
 
 Scheduled tasks for daily bet assessment and hourly bet resolution.
@@ -21,6 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.brokers.draftkings import DraftKingsBroker
 from src.brokers.prizepicks import PrizePicksBroker
+from src.brokers.oddsapi import OddsApiBroker
 from src.brokers.base import SportsbookBroker
 from src.config import settings
 
@@ -49,20 +50,43 @@ def _build_brokers() -> dict[str, SportsbookBroker]:
     try:
         brokers["draftkings"] = DraftKingsBroker()
     except ImportError:
-        logger.warning("DraftKingsBroker unavailable (lukhed-sports not installed) -- skipping.")
+        logger.warning(
+            "DraftKingsBroker unavailable (lukhed-sports not installed) -- skipping."
+        )
+
+    # The Odds API -- multi-book odds aggregation (read-only)
+    if settings.THE_ODDS_API_KEY:
+        try:
+            brokers["oddsapi"] = OddsApiBroker(api_key=settings.THE_ODDS_API_KEY)
+            logger.info("OddsApiBroker loaded (API key present).")
+        except Exception:
+            logger.exception("OddsApiBroker failed to initialise -- skipping.")
+    else:
+        logger.info("OddsApiBroker skipped -- THE_ODDS_API_KEY not set.")
 
     return brokers
 
 
-def _select_broker(brokers: dict[str, SportsbookBroker], sport: str) -> tuple[str, SportsbookBroker]:
+def _select_broker(
+    brokers: dict[str, SportsbookBroker], sport: str
+) -> tuple[str, SportsbookBroker]:
     """
     Route a sport to the preferred broker.
-    - Game lines (spreads/totals/ML) -> DraftKings (fallback: PrizePicks)
-    - Player props              -> PrizePicks
+    Priority:
+      1. Odds API (multi-book aggregation, best for line shopping)
+      2. DraftKings (game lines: spreads/totals/ML)
+      3. PrizePicks (player props fallback)
     """
     game_line_sports = {"NFL", "NBA", "NHL", "MLB", "NCAAFB", "NCAAMB"}
+
+    # Prefer Odds API for game-line sports (aggregates 40+ books)
+    if sport.upper() in game_line_sports and "oddsapi" in brokers:
+        return "oddsapi", brokers["oddsapi"]
+
+    # Fallback to DraftKings for game lines
     if sport.upper() in game_line_sports and "draftkings" in brokers:
         return "draftkings", brokers["draftkings"]
+
     return "prizepicks", brokers["prizepicks"]
 
 
@@ -100,7 +124,8 @@ def validate_edge(parlay, current_odds: dict) -> bool:
             # Could not find this leg in freshly-fetched odds -- conservative: skip
             logger.info(
                 "validate_edge: leg %s not found in live odds -- invalidating parlay %s.",
-                event_id, getattr(parlay, "id", "?"),
+                event_id,
+                getattr(parlay, "id", "?"),
             )
             return False
 
@@ -113,7 +138,10 @@ def validate_edge(parlay, current_odds: dict) -> bool:
             if shift > 0.10:
                 logger.info(
                     "validate_edge: leg %s line moved %.1f%% (%.2f -> %.2f) -- invalidating.",
-                    event_id, shift * 100, original_line, live_line,
+                    event_id,
+                    shift * 100,
+                    original_line,
+                    live_line,
                 )
                 return False
 
@@ -163,13 +191,15 @@ async def daily_bet_assessment(app) -> None:
     max_bets = settings.MAX_BETS_PER_DAY
     budget_manager = getattr(app.state, "budget_manager", None)
 
-    for parlay in parlays[:max_bets]:           # cap at MAX_BETS_PER_DAY
+    for parlay in parlays[:max_bets]:  # cap at MAX_BETS_PER_DAY
         if placed >= max_bets:
             break
 
         # Re-check stop-loss and exposure before each bet
         if risk_manager.check_stop_loss():
-            logger.warning("Stop-loss triggered mid-session -- halting further placement.")
+            logger.warning(
+                "Stop-loss triggered mid-session -- halting further placement."
+            )
             break
 
         exposure = risk_manager.get_exposure()
@@ -194,7 +224,9 @@ async def daily_bet_assessment(app) -> None:
             if parlay.win_probability > 0:
                 stake = risk_manager.kelly_stake(parlay.win_probability, parlay.odds)
                 if stake == 0.0:
-                    logger.info("Kelly stake is zero for parlay %s -- skipping", parlay.id)
+                    logger.info(
+                        "Kelly stake is zero for parlay %s -- skipping", parlay.id
+                    )
                     continue
             else:
                 stake = parlay.recommended_stake
@@ -203,18 +235,26 @@ async def daily_bet_assessment(app) -> None:
             stake = min(stake, settings.MAX_DAILY_STAKE)
 
             # Apply MIN_WIN_PROBABILITY gate from config
-            if parlay.win_probability > 0 and parlay.win_probability < settings.MIN_WIN_PROBABILITY:
+            if (
+                parlay.win_probability > 0
+                and parlay.win_probability < settings.MIN_WIN_PROBABILITY
+            ):
                 logger.info(
                     "Parlay %s win_prob=%.3f below MIN_WIN_PROBABILITY=%.3f -- skipping",
-                    parlay.id, parlay.win_probability, settings.MIN_WIN_PROBABILITY,
+                    parlay.id,
+                    parlay.win_probability,
+                    settings.MIN_WIN_PROBABILITY,
                 )
                 continue
 
             # Check budget before placing
-            if budget_manager is not None and not budget_manager.can_spend(stake, sport=parlay.sport):
+            if budget_manager is not None and not budget_manager.can_spend(
+                stake, sport=parlay.sport
+            ):
                 logger.warning(
                     "Budget limit would be breached for parlay %s (stake=%.2f) -- skipping.",
-                    parlay.id, stake,
+                    parlay.id,
+                    stake,
                 )
                 continue
 
@@ -226,8 +266,12 @@ async def daily_bet_assessment(app) -> None:
             await risk_manager.record_bet(parlay, bet_id, broker_name)
             # Record spend in budget manager
             if budget_manager is not None:
-                budget_manager.record_spend(bet_id, stake, sport=parlay.sport, sportsbook=broker_name)
-            logger.info("Placed bet %s via %s (parlay %s)", bet_id, broker_name, parlay.id)
+                budget_manager.record_spend(
+                    bet_id, stake, sport=parlay.sport, sportsbook=broker_name
+                )
+            logger.info(
+                "Placed bet %s via %s (parlay %s)", bet_id, broker_name, parlay.id
+            )
             placed += 1
 
         except Exception:
@@ -253,7 +297,9 @@ async def resolve_bets(app) -> None:
     for bet in pending:
         broker = brokers.get(bet.broker_name)
         if broker is None:
-            logger.warning("Unknown broker '%s' for bet %s", bet.broker_name, bet.bet_id)
+            logger.warning(
+                "Unknown broker '%s' for bet %s", bet.broker_name, bet.bet_id
+            )
             continue
         try:
             status = await broker.check_bet_status(bet.bet_id)
@@ -265,7 +311,11 @@ async def resolve_bets(app) -> None:
         except Exception:
             logger.exception("Error resolving bet %s", bet.bet_id)
 
-    logger.info("Bet resolution complete -- %d settled out of %d pending", settled_count, len(pending))
+    logger.info(
+        "Bet resolution complete -- %d settled out of %d pending",
+        settled_count,
+        len(pending),
+    )
 
 
 async def reset_daily_limits(app) -> None:
@@ -310,13 +360,13 @@ def create_scheduler(app) -> AsyncIOScheduler:
         id="daily_bet_assessment",
         args=[app],
         replace_existing=True,
-        misfire_grace_time=300,    # allow up to 5 min late start
+        misfire_grace_time=300,  # allow up to 5 min late start
     )
 
     scheduler.add_job(
         resolve_bets,
         trigger="cron",
-        minute=5,                  # runs at HH:05 every hour
+        minute=5,  # runs at HH:05 every hour
         id="resolve_bets",
         args=[app],
         replace_existing=True,

@@ -1,4 +1,4 @@
-﻿"""
+"""
 src/main.py  -- FastAPI app with scheduler wired into lifespan.
 """
 
@@ -10,8 +10,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Request
+import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from fastapi_cache.decorator import cache
 
 from src.config import settings
 from src.database import get_connection, init_db
@@ -19,6 +23,8 @@ from src.risk_manager import RiskManager
 from src.scheduler import create_scheduler
 from src.account_tracker import AccountTracker
 from src.budget import BudgetManager, BudgetPeriod
+
+import secrets as _secrets_mod
 
 API_KEY = os.getenv("SPORTS_STEVE_API_KEY", "")
 
@@ -28,8 +34,10 @@ async def verify_api_key(request: Request):
     if not API_KEY:
         return  # Dev mode - no auth required
     auth = request.headers.get("Authorization", "")
-    if auth != f"Bearer {API_KEY}":
+    expected = f"Bearer {API_KEY}"
+    if not _secrets_mod.compare_digest(auth, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 # Configure logging using level from .env
 logging.basicConfig(
@@ -69,7 +77,9 @@ async def lifespan(app: FastAPI):
         )
     if tracker.get_account("draftkings-main") is None:
         # DraftKings balance is unknown at startup -- register with 0 and update manually
-        tracker.add_account("DraftKings", initial_balance=0.0, account_id="draftkings-main")
+        tracker.add_account(
+            "DraftKings", initial_balance=0.0, account_id="draftkings-main"
+        )
     app.state.account_tracker = tracker
 
     # Budget manager -- wire up any non-zero limits from config
@@ -86,6 +96,10 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("APScheduler started")
 
+    # Initialize in-memory cache for picks endpoint
+    FastAPICache.init(InMemoryBackend(), prefix="sports-steve-cache")
+    logger.info("FastAPICache initialized")
+
     yield  # app is running
 
     # ---- shutdown ----
@@ -98,7 +112,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Sports Steve",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
     dependencies=[Depends(verify_api_key)],
 )
@@ -123,6 +137,7 @@ router = APIRouter(prefix="/api/v1", tags=["sports-steve"])
 # Trigger endpoints (POST)
 # ---------------------------------------------------------------------------
 
+
 @router.post("/daily-run", summary="Manually trigger the daily bet assessment")
 async def trigger_daily_run(background_tasks: BackgroundTasks):
     if _daily_run_lock.locked():
@@ -140,6 +155,7 @@ async def trigger_daily_run(background_tasks: BackgroundTasks):
 @router.post("/resolve-bets", summary="Manually trigger bet resolution")
 async def trigger_resolve_bets(background_tasks: BackgroundTasks):
     from src.scheduler import resolve_bets
+
     background_tasks.add_task(resolve_bets, app)
     return {"status": "queued", "job": "resolve_bets"}
 
@@ -147,6 +163,7 @@ async def trigger_resolve_bets(background_tasks: BackgroundTasks):
 # ---------------------------------------------------------------------------
 # Read endpoints (GET) -- used by the frontend
 # ---------------------------------------------------------------------------
+
 
 @router.get("/health", summary="Health check and scheduler status")
 async def health():
@@ -156,6 +173,7 @@ async def health():
         "active_sports": settings.ACTIVE_SPORTS,
         "bankroll": app.state.risk_manager.bankroll,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "api_version": "1.1.0",
     }
 
 
@@ -266,7 +284,9 @@ class SettingsUpdate(BaseModel):
     max_daily_stake: Optional[float] = Field(None, gt=0, le=100)
 
 
-@router.post("/settings", summary="Update runtime settings (budget limits and risk profile)")
+@router.post(
+    "/settings", summary="Update runtime settings (budget limits and risk profile)"
+)
 async def update_settings(body: SettingsUpdate):
     """
     Accepts a JSON body with any of:
@@ -300,4 +320,90 @@ async def update_settings(body: SettingsUpdate):
     return {"status": "updated", "applied": applied}
 
 
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from fastapi_cache.decorator import cache
+
+
+# Initialize cache on startup
+@app.on_event("startup")
+async def startup():
+    FastAPICache.init(InMemoryBackend())
+
+
+# Cache picks for 60 seconds (prevents rate limiting by caching PP responses)
+@router.get("/prizepicks/picks", summary="PrizePicks matched picks with edge analysis")
+@cache(expire=60)
+async def get_prize_picks_picks(
+    sport: str | None = None,  # query param for filtering
+    min_edge: float = 0.0,
+):
+    """
+    Returns PrizePicks projections matched to Odds API lines.
+
+    Query params:
+      - sport: Filter by sport (e.g., NBA, NFL) — optional
+      - min_edge: Minimum edge threshold (0.05 = 5%) — default 0
+
+    Returns list of matched picks sorted by edge descending.
+    Cached for 60 seconds to prevent rate limiting.
+    """
+    if sport and sport.strip():
+        sports = [sport]
+    else:
+        sports = settings.ACTIVE_SPORTS
+
+    # Build brokers dict (reuse existing from scheduler pattern)
+    from src.scheduler import _build_brokers
+
+    brokers = _build_brokers()
+
+    if not brokers:
+        return {"picks": [], "error": "No brokers available"}
+
+    from src.services.picks_matcher import PicksMatcher
+
+    matcher = PicksMatcher(brokers=brokers)
+
+    # Use async context to ensure proper cleanup
+    try:
+        picks = await matcher.fetch_picks(sports=sports, min_edge=min_edge)
+        return {
+            "picks": [
+                {
+                    "player": p.player,
+                    "stat_type": p.stat_type,
+                    "pp_line": p.pp_line,
+                    "odds": p.odds,
+                    "pp_projection_id": p.pp_projection_id,
+                    "game_id": p.game_id,
+                    "oddsapi_home": p.oddsapi_home,
+                    "oddsapi_away": p.oddsapi_away,
+                    "oddsapi_line": p.oddsapi_line,
+                    "edge": p.edge,
+                    "sport": p.sport,
+                }
+                for p in picks
+            ],
+            "count": len(picks),
+        }
+    except Exception:
+        logger.exception("Failed to fetch PrizePicks picks")
+        return {"picks": [], "error": "Failed to fetch picks"}
+    finally:
+        # Clean up broker resources to prevent connection leaks
+        for name, broker in brokers.items():
+            if hasattr(broker, "aclose"):
+                try:
+                    await broker.aclose()
+                except Exception:
+                    logger.warning(f"Failed to close broker {name}")
+
+
 app.include_router(router)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=settings.PORT)

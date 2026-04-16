@@ -48,7 +48,20 @@ export interface AccountHealth {
   sportsbook: string;
   balance: number;
   status: 'healthy' | 'limited' | 'gubbed' | 'low_balance';
-  lastActivity: string;
+}
+
+export interface PicksCard {
+  player: string;
+  stat_type: string;
+  pp_line: number;
+  odds: number;
+  pp_projection_id: string;
+  game_id: string;
+  oddsapi_home: string;
+  oddsapi_away: string;
+  oddsapi_line: string;
+  edge: number;
+  sport: string;
 }
 
 export interface OddsConversion {
