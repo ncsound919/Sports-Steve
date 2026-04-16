@@ -13,9 +13,11 @@ import json
 import logging
 import sqlite3
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
-from typing import Any
+
+from src.config import settings
+from src.optimization.parlay_builder import Parlay
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +191,13 @@ class RiskManager:
         fractional = kelly_full * self.kelly_fraction
         max_stake = self.bankroll * self.max_exposure_pct
         stake = min(fractional * self.bankroll, max_stake)
+        if stake < settings.MIN_BET_AMOUNT:
+            logger.debug(
+                "Kelly stake %.2f below minimum bet %.2f",
+                stake,
+                settings.MIN_BET_AMOUNT,
+            )
+            return 0.0
         logger.debug(
             "Kelly stake: p=%.3f odds=%.2f full_kelly=%.4f stake=%.2f",
             win_probability,
@@ -237,7 +246,7 @@ class RiskManager:
     # Exposure monitoring
     # ------------------------------------------------------------------
 
-    def get_exposure(self) -> dict[str, Any]:
+    def get_exposure(self) -> dict[str, float | int | dict[str, float]]:
         """
         Return current open exposure broken down by broker and sport.
 
@@ -263,11 +272,16 @@ class RiskManager:
             "exposure_pct": round(total_stake / self.bankroll * 100, 2) if self.bankroll > 0 else 0.0,
         }
 
+    async def get_all_bets(self) -> list[Bet]:
+        """Return a snapshot of all bets."""
+        async with self._lock:
+            return list(self._bets.values())
+
     # ------------------------------------------------------------------
     # Audit trail
     # ------------------------------------------------------------------
 
-    async def record_bet(self, parlay: Any, bet_id: str, broker_name: str) -> Bet:
+    async def record_bet(self, parlay: Parlay, bet_id: str, broker_name: str) -> Bet:
         """
         Record a newly placed bet for audit-trail and exposure tracking.
 
@@ -280,24 +294,32 @@ class RiskManager:
         broker_name:
             Key identifying the broker (e.g. "draftkings", "prizepicks").
         """
-        stake = getattr(parlay, "recommended_stake", 0.0)
+        stake = parlay.recommended_stake
         if stake > self.bankroll:
             raise ValueError(f"Insufficient bankroll: ${self.bankroll:.2f} < ${stake:.2f}")
 
         record_id = str(uuid.uuid4())
+        legs = [
+            asdict(leg)
+            if is_dataclass(leg)
+            else dict(leg)
+            if isinstance(leg, dict)
+            else vars(leg)
+            for leg in parlay.legs
+        ]
         bet = Bet(
             id=record_id,
             bet_id=bet_id,
             broker_name=broker_name,
-            sport=getattr(parlay, "sport", "unknown"),
-            legs=[leg.__dict__ if hasattr(leg, "__dict__") else leg for leg in getattr(parlay, "legs", [])],
+            sport=parlay.sport,
+            legs=legs,
             stake=stake,
-            odds=getattr(parlay, "odds", 0.0),
-            expected_value=getattr(parlay, "expected_value", 0.0),
+            odds=parlay.odds,
+            expected_value=parlay.expected_value,
         )
         async with self._lock:
+            self._persist_bet(bet)
             self._bets[record_id] = bet
-        self._persist_bet(bet)
         logger.info(
             "Bet recorded | id=%s bet_id=%s broker=%s sport=%s stake=%.2f",
             record_id,
@@ -310,7 +332,8 @@ class RiskManager:
 
     async def get_pending_bets(self) -> list[Bet]:
         """Return all bets that have not yet been settled."""
-        return [b for b in self._bets.values() if b.status == "pending"]
+        async with self._lock:
+            return [b for b in self._bets.values() if b.status == "pending"]
 
     async def settle_bet(self, bet_internal_id: str, result: str) -> Bet | None:
         """

@@ -300,6 +300,7 @@ Create a `.env` file in the project root. All variables have sensible defaults.
 | `RISK_KELLY_FRACTION`     | `0.25`   | Fractional Kelly multiplier (0.25 = quarter Kelly)    |
 | `MAX_BETS_PER_DAY`        | `2`      | Maximum bets placed per day                           |
 | `MAX_DAILY_STAKE`         | `100.0`  | Maximum total daily stake (USD)                       |
+| `MIN_BET_AMOUNT`          | `5.0`    | Minimum allowed Kelly-sized bet in USD                |
 
 ### Edge / Quality Gates
 
@@ -334,9 +335,12 @@ Create a `.env` file in the project root. All variables have sensible defaults.
 
 ### System
 
-| Variable    | Default | Description   |
-|-------------|---------|---------------|
-| `LOG_LEVEL` | `INFO`  | Logging level |
+| Variable               | Default                              | Description                                 |
+|------------------------|--------------------------------------|---------------------------------------------|
+| `ENV`                  | `development`                        | Environment mode for auth and CORS defaults |
+| `LOG_LEVEL`            | `INFO`                               | Logging level                               |
+| `SPORTS_STEVE_API_KEY` | _unset_                              | Required outside development for API access |
+| `CORS_ORIGINS`         | `http://localhost:5173` (development) | Comma-separated allowed frontend origins    |
 
 ---
 

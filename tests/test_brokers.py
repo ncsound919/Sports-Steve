@@ -126,8 +126,10 @@ class TestConfig:
         from src.config import Settings
         s = Settings()
         assert isinstance(s.ACTIVE_SPORTS, list)
+        assert isinstance(s.CORS_ORIGINS, list)
         assert s.MIN_EDGE == 0.05
         assert s.MAX_DAILY_STAKE == 100.0
+        assert s.MIN_BET_AMOUNT == 5.0
 
     def test_risk_management_defaults(self):
         from src.config import Settings
@@ -178,6 +180,10 @@ class TestRiskManagerKelly:
         stake = self.rm.kelly_stake(win_probability=0.99, decimal_odds=10.0)
         assert stake <= 1_000.0 * 0.20
 
+    def test_stake_below_minimum_returns_zero(self):
+        stake = self.rm.kelly_stake(win_probability=0.51, decimal_odds=1.95)
+        assert stake == 0.0
+
     def test_invalid_probability_returns_zero(self):
         assert self.rm.kelly_stake(win_probability=0.0, decimal_odds=2.0) == 0.0
         assert self.rm.kelly_stake(win_probability=1.0, decimal_odds=2.0) == 0.0
@@ -185,6 +191,21 @@ class TestRiskManagerKelly:
     def test_odds_at_or_below_one_returns_zero(self):
         assert self.rm.kelly_stake(win_probability=0.6, decimal_odds=1.0) == 0.0
         assert self.rm.kelly_stake(win_probability=0.6, decimal_odds=0.5) == 0.0
+
+
+class TestRiskManagerSnapshots:
+    @pytest.mark.asyncio
+    async def test_get_all_bets_returns_snapshot(self):
+        from src.optimization.parlay_builder import Parlay
+        from src.risk_manager import RiskManager
+
+        rm = RiskManager(bankroll=1_000.0)
+        parlay = Parlay(id="snapshot-1", sport="NBA", odds=2.0, recommended_stake=25.0)
+        await rm.record_bet(parlay, "DK_SNAPSHOT_1", "draftkings")
+
+        bets = await rm.get_all_bets()
+        assert len(bets) == 1
+        assert bets[0].bet_id == "DK_SNAPSHOT_1"
 
 
 class TestRiskManagerStopLoss:
