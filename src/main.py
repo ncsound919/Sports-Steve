@@ -28,7 +28,7 @@ import secrets as _secrets_mod
 async def verify_api_key(request: Request):
     """Verify API key if configured."""
     api_key = settings.SPORTS_STEVE_API_KEY
-    if not api_key and settings.ENV == "development":
+    if settings.ENV == "development" and not api_key:
         return
     if not api_key:
         raise HTTPException(status_code=503, detail="API key is not configured")

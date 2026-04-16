@@ -319,8 +319,8 @@ class RiskManager:
             odds=parlay.odds,
             expected_value=parlay.expected_value,
         )
-        self._persist_bet(bet)
         async with self._lock:
+            self._persist_bet(bet)
             self._bets[record_id] = bet
         logger.info(
             "Bet recorded | id=%s bet_id=%s broker=%s sport=%s stake=%.2f",
