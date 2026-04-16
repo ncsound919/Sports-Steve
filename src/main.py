@@ -116,7 +116,7 @@ async def lifespan(app: FastAPI):
             try:
                 await broker.aclose()
             except Exception:
-                logger.warning("Failed to close broker %s", name)
+                logger.warning("Failed to close broker %s", name, exc_info=True)
     # Flush and close the database connection
     db_conn.close()
     logger.info("SQLite connection closed")

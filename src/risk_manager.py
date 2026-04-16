@@ -139,6 +139,15 @@ class RiskManager:
         save_state(self._db, "daily_pnl", str(self._daily_pnl))
         save_state(self._db, "is_cooling_down", "1" if self._is_cooling_down else "0")
 
+    @staticmethod
+    def _serialize_leg(leg: object) -> dict:
+        """Convert a parlay leg into a JSON-serializable mapping."""
+        if is_dataclass(leg):
+            return asdict(leg)
+        if isinstance(leg, dict):
+            return dict(leg)
+        return vars(leg)
+
     # ------------------------------------------------------------------
     # Read-only properties for observability / testing
     # ------------------------------------------------------------------
@@ -299,14 +308,7 @@ class RiskManager:
             raise ValueError(f"Insufficient bankroll: ${self.bankroll:.2f} < ${stake:.2f}")
 
         record_id = str(uuid.uuid4())
-        legs = [
-            asdict(leg)
-            if is_dataclass(leg)
-            else dict(leg)
-            if isinstance(leg, dict)
-            else vars(leg)
-            for leg in parlay.legs
-        ]
+        legs = [self._serialize_leg(leg) for leg in parlay.legs]
         bet = Bet(
             id=record_id,
             bet_id=bet_id,
@@ -317,8 +319,8 @@ class RiskManager:
             odds=parlay.odds,
             expected_value=parlay.expected_value,
         )
+        self._persist_bet(bet)
         async with self._lock:
-            self._persist_bet(bet)
             self._bets[record_id] = bet
         logger.info(
             "Bet recorded | id=%s bet_id=%s broker=%s sport=%s stake=%.2f",
