@@ -4,7 +4,6 @@ src/main.py  -- FastAPI app with scheduler wired into lifespan.
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,15 +25,15 @@ from src.budget import BudgetManager, BudgetPeriod
 
 import secrets as _secrets_mod
 
-API_KEY = os.getenv("SPORTS_STEVE_API_KEY", "")
-
-
 async def verify_api_key(request: Request):
     """Verify API key if configured."""
-    if not API_KEY:
-        return  # Dev mode - no auth required
+    api_key = settings.SPORTS_STEVE_API_KEY
+    if settings.ENV == "development" and not api_key:
+        return
+    if not api_key:
+        raise HTTPException(status_code=503, detail="API key is not configured")
     auth = request.headers.get("Authorization", "")
-    expected = f"Bearer {API_KEY}"
+    expected = f"Bearer {api_key}"
     if not _secrets_mod.compare_digest(auth, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -52,11 +51,14 @@ _daily_run_lock = asyncio.Lock()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ---- startup ----
+    if settings.ENV != "development" and not settings.SPORTS_STEVE_API_KEY:
+        raise RuntimeError("SPORTS_STEVE_API_KEY must be configured outside development")
 
     # Initialise SQLite database
     db_conn = get_connection()
     init_db(db_conn)
     app.state.db_conn = db_conn
+    app.state.settings_lock = asyncio.Lock()
 
     app.state.risk_manager = RiskManager(
         bankroll=settings.RISK_BANKROLL,
@@ -92,6 +94,10 @@ async def lifespan(app: FastAPI):
         budget_manager.add_budget(BudgetPeriod.MONTHLY, settings.BUDGET_MONTHLY_LIMIT)
     app.state.budget_manager = budget_manager
 
+    from src.scheduler import _build_brokers
+
+    app.state.brokers = _build_brokers()
+
     scheduler = create_scheduler(app)
     scheduler.start()
     logger.info("APScheduler started")
@@ -105,6 +111,12 @@ async def lifespan(app: FastAPI):
     # ---- shutdown ----
     scheduler.shutdown(wait=False)
     logger.info("APScheduler stopped")
+    for name, broker in app.state.brokers.items():
+        if hasattr(broker, "aclose"):
+            try:
+                await broker.aclose()
+            except Exception:
+                logger.warning("Failed to close broker %s", name, exc_info=True)
     # Flush and close the database connection
     db_conn.close()
     logger.info("SQLite connection closed")
@@ -120,7 +132,7 @@ app = FastAPI(
 # Allow the Vite dev server (and any origin in dev) to call the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -181,7 +193,7 @@ async def health():
 async def get_bankroll():
     rm = app.state.risk_manager
     exposure = rm.get_exposure()
-    bets = list(rm._bets.values())
+    bets = await rm.get_all_bets()
     won = [b for b in bets if b.status == "won"]
     lost = [b for b in bets if b.status == "lost"]
     total_bets = len(bets)
@@ -208,7 +220,7 @@ async def get_bankroll():
 @router.get("/bets", summary="All bet history")
 async def get_bets():
     rm = app.state.risk_manager
-    bets = list(rm._bets.values())
+    bets = await rm.get_all_bets()
     return {
         "bets": [
             {
@@ -310,26 +322,16 @@ async def update_settings(body: SettingsUpdate):
     if body.monthly_limit is not None:
         bm.add_budget(BudgetPeriod.MONTHLY, body.monthly_limit)
         applied.append("monthly_limit")
-    if body.kelly_fraction is not None:
-        rm.kelly_fraction = body.kelly_fraction
-        applied.append("kelly_fraction")
-    if body.max_daily_stake is not None:
-        settings.MAX_DAILY_STAKE = body.max_daily_stake
-        applied.append("max_daily_stake")
+    if body.kelly_fraction is not None or body.max_daily_stake is not None:
+        async with app.state.settings_lock:
+            if body.kelly_fraction is not None:
+                rm.kelly_fraction = body.kelly_fraction
+                applied.append("kelly_fraction")
+            if body.max_daily_stake is not None:
+                settings.MAX_DAILY_STAKE = body.max_daily_stake
+                applied.append("max_daily_stake")
 
     return {"status": "updated", "applied": applied}
-
-
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.inmemory import InMemoryBackend
-from fastapi_cache.decorator import cache
-
-
-# Initialize cache on startup
-@app.on_event("startup")
-async def startup():
-    FastAPICache.init(InMemoryBackend())
-
 
 # Cache picks for 60 seconds (prevents rate limiting by caching PP responses)
 @router.get("/prizepicks/picks", summary="PrizePicks matched picks with edge analysis")
@@ -353,10 +355,7 @@ async def get_prize_picks_picks(
     else:
         sports = settings.ACTIVE_SPORTS
 
-    # Build brokers dict (reuse existing from scheduler pattern)
-    from src.scheduler import _build_brokers
-
-    brokers = _build_brokers()
+    brokers = app.state.brokers
 
     if not brokers:
         return {"picks": [], "error": "No brokers available"}
@@ -390,14 +389,6 @@ async def get_prize_picks_picks(
     except Exception:
         logger.exception("Failed to fetch PrizePicks picks")
         return {"picks": [], "error": "Failed to fetch picks"}
-    finally:
-        # Clean up broker resources to prevent connection leaks
-        for name, broker in brokers.items():
-            if hasattr(broker, "aclose"):
-                try:
-                    await broker.aclose()
-                except Exception:
-                    logger.warning(f"Failed to close broker {name}")
 
 
 app.include_router(router)

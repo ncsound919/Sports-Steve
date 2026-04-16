@@ -161,7 +161,7 @@ async def daily_bet_assessment(app) -> None:
     3. Place top-N bets (capped by MAX_BETS_PER_DAY) and record them.
     """
     logger.info("=== Daily bet assessment starting ===")
-    brokers = _build_brokers()
+    brokers = getattr(app.state, "brokers", None) or _build_brokers()
     risk_manager = app.state.risk_manager
 
     # Enforce stop-loss / cool-down before doing any work
@@ -285,7 +285,7 @@ async def resolve_bets(app) -> None:
     Run hourly -- check pending bets and settle any that have results.
     """
     logger.info("Checking pending bets for settlement...")
-    brokers = _build_brokers()
+    brokers = getattr(app.state, "brokers", None) or _build_brokers()
 
     try:
         pending = await app.state.risk_manager.get_pending_bets()

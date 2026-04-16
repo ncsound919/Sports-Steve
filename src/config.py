@@ -13,17 +13,41 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _parse_csv_env(name: str, default: str = "") -> list[str]:
+    """Parse a comma-separated env var into a clean list."""
+    value = os.getenv(name, default)
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _default_cors_origins() -> list[str]:
+    """Return environment-aware default CORS origins."""
+    configured = _parse_csv_env("CORS_ORIGINS")
+    if configured:
+        return configured
+    if os.getenv("ENV", "development").lower() == "development":
+        return ["http://localhost:5173"]
+    return []
+
+
 @dataclass
 class Settings:
     """Central configuration for Sports-Steve."""
 
+    ENV: str = os.getenv("ENV", "development").lower()
+
     # Sports to monitor for daily bet assessment
-    ACTIVE_SPORTS: list = field(
-        default_factory=lambda: os.getenv("ACTIVE_SPORTS", "NFL,NBA,NHL,MLB").split(",")
+    ACTIVE_SPORTS: list[str] = field(
+        default_factory=lambda: _parse_csv_env("ACTIVE_SPORTS", "NFL,NBA,NHL,MLB")
     )
+
+    # Allowed browser origins for the API
+    CORS_ORIGINS: list[str] = field(default_factory=_default_cors_origins)
 
     # Maximum daily stake budget (USD)
     MAX_DAILY_STAKE: float = float(os.getenv("MAX_DAILY_STAKE", "100.0"))
+
+    # Minimum accepted bet size (USD)
+    MIN_BET_AMOUNT: float = float(os.getenv("MIN_BET_AMOUNT", "5.0"))
 
     # Hard cap on bets placed per day
     MAX_BETS_PER_DAY: int = int(os.getenv("MAX_BETS_PER_DAY", "5"))
@@ -72,6 +96,9 @@ class Settings:
 
     # Uvicorn server port
     PORT: int = int(os.getenv("PORT", "8000"))
+
+    # API authentication
+    SPORTS_STEVE_API_KEY: str = os.getenv("SPORTS_STEVE_API_KEY", "")
 
 
 settings = Settings()
