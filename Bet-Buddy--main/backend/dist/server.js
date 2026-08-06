@@ -9,6 +9,7 @@ const express_1 = __importDefault(require("express"));
 const games_1 = __importDefault(require("./routes/games"));
 const ocr_1 = __importDefault(require("./routes/ocr"));
 const tools_1 = __importDefault(require("./routes/tools"));
+const backtest_1 = __importDefault(require("./routes/backtest"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 3001;
@@ -44,6 +45,8 @@ app.use("/api/tools", tools_1.default);
 app.use("/api/ocr", ocr_1.default);
 // Games and SimVC API routes
 app.use("/api/games", games_1.default);
+// Historical dataset backtest (deterministic-brain NBA CSVs)
+app.use("/api/backtest", backtest_1.default);
 // Error handling middleware
 app.use((err, _req, res, _next) => {
     console.error(err.stack);

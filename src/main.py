@@ -146,6 +146,50 @@ router = APIRouter(prefix="/api/v1", tags=["sports-steve"])
 
 
 # ---------------------------------------------------------------------------
+# Dataset backtest (historical NBA betting theories)
+# ---------------------------------------------------------------------------
+
+class BacktestRequest(BaseModel):
+    strategy: str
+    params: dict = Field(default_factory=dict)
+    date_from: str = ""
+    date_to: str = ""
+    stake: float = 10.0
+    max_bets: int = 5000
+    books: list[str] = Field(default_factory=list)
+
+
+@router.get("/backtest/datasets", summary="List available historical datasets")
+async def backtest_datasets():
+    from src.services.dataset_backtest import list_datasets
+    return {"datasets": list_datasets()}
+
+
+@router.get("/backtest/strategies", summary="List supported backtest strategies")
+async def backtest_strategies():
+    from src.services.dataset_backtest import STRATEGIES
+    return {"strategies": STRATEGIES}
+
+
+@router.post("/backtest/run", summary="Run a deterministic betting-theory backtest")
+async def backtest_run(req: BacktestRequest):
+    from src.services.dataset_backtest import run_backtest
+    try:
+        result = run_backtest(
+            strategy=req.strategy,
+            params=req.params,
+            date_from=req.date_from,
+            date_to=req.date_to,
+            stake=req.stake,
+            max_bets=req.max_bets,
+            books=req.books or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Trigger endpoints (POST)
 # ---------------------------------------------------------------------------
 
